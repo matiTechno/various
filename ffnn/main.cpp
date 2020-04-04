@@ -275,6 +275,37 @@ void net_train(Net net, Train train)
     }
 }
 
+void dump_example(const char* prefix, float* input, float* output, int width, int height)
+{
+    int label = 0;
+    float max_output = 0.f;
+
+    for(int i = 0; i < 10; ++i)
+    {
+        if(output[i] > max_output)
+        {
+            max_output = output[i];
+            label = i;
+        }
+    }
+    char buf[1024];
+    int n = snprintf(buf, sizeof(buf), "%s_%d.pgm", prefix, label);
+    assert(n < (int)sizeof(buf) && n > 0);
+    FILE* fd = fopen(buf, "wb");
+    assert(fd);
+    n = snprintf(buf, sizeof(buf), "P5 %d %d 255 ", width, height);
+    assert(n < (int)sizeof(buf) && n > 0);
+    int nw = fwrite(buf, 1, n, fd);
+    assert(nw == n);
+    unsigned char* image = (unsigned char*)malloc(width * height);
+
+    for(int i = 0; i < width * height; ++i)
+        image[i] = input[i] * 255.f;
+    nw = fwrite(image, 1, width * height, fd);
+    assert(nw == width * height);
+    fclose(fd);
+}
+
 // https://archive.ics.uci.edu/ml/datasets/Semeion+Handwritten+Digit
 
 void test_semeion()
@@ -310,8 +341,8 @@ void test_semeion()
         {
             float f;
             int n = fscanf(fd, "%f", &f);
-            *(input + k) = f;
             assert(n == 1);
+            input[k] = f;
         }
 
         for(int k = 0; k < 10; ++k)
@@ -325,6 +356,12 @@ void test_semeion()
     }
 
     fclose(fd);
+
+    // validate if the data set was loaded correctly
+    dump_example("se0", input_set[55], output_set[55], 16, 16);
+    dump_example("se1", input_set[1111], output_set[1111], 16, 16);
+    dump_example("se3", input_set[881], output_set[881], 16, 16);
+    dump_example("se4", input_set[404], output_set[404], 16, 16);
 
     shuffle_set(input_set, output_set, set_size);
 
@@ -354,7 +391,7 @@ void load_mnist_set(const char* filename_images, const char* filename_labels, fl
         unsigned int x;
         int n = fread(&x, 4, 1, fd);
         assert(n == 1);
-        assert(!(ntohl(x) & 0xffff0000)); // magic number
+        assert(ntohl(x) == 2051); // magic number
 
         n = fread(&x, 4, 1, fd);
         assert(n == 1);
@@ -378,9 +415,10 @@ void load_mnist_set(const char* filename_images, const char* filename_labels, fl
 
         for(int k = 0; k < 28 * 28; ++k)
         {
-            int v = fgetc(fd);
-            assert(v != EOF);
-            input[k] = v / 255.f;
+            unsigned char x;
+            int n = fread(&x, 1, 1, fd);
+            assert(n == 1);
+            input[k] = x / 255.f;
         }
         input_set[i] = input;
     }
@@ -396,7 +434,7 @@ void load_mnist_set(const char* filename_images, const char* filename_labels, fl
         unsigned int x;
         int n = fread(&x, 4, 1, fd);
         assert(n == 1);
-        assert(!(ntohl(x) & 0xffff0000)); // magic number
+        assert(ntohl(x) == 2049); // magic number
 
         n = fread(&x, 4, 1, fd);
         assert(n == 1);
@@ -407,9 +445,11 @@ void load_mnist_set(const char* filename_images, const char* filename_labels, fl
     {
         float* output = (float*)malloc(sizeof(float) * 10);
         memset(output, 0, sizeof(float) * 10);
-        int v = fgetc(fd);
-        assert(v != EOF && v >= 0 && v <= 9);
-        output[v] = 1.f;
+        unsigned char x;
+        int n = fread(&x, 1, 1, fd);
+        assert(n == 1);
+        assert(x < 10);
+        output[x] = 1.f;
         output_set[i] = output;
     }
     fclose(fd);
@@ -430,6 +470,10 @@ void test_mnist()
     load_mnist_set("t10k-images-idx3-ubyte", "t10k-labels-idx1-ubyte", train.test_input_set, train.test_output_set, train.test_set_size);
     assert(train.set_size == 60000);
     assert(train.test_set_size == 10000);
+    dump_example("mn_train0", train.input_set[2], train.output_set[2], 28, 28);
+    dump_example("mn_train1", train.input_set[500], train.output_set[500], 28, 28);
+    dump_example("mn_test0",  train.test_input_set[100], train.test_output_set[100], 28, 28);
+    dump_example("mn_test1",  train.test_input_set[4], train.test_output_set[4], 28, 28);
     net_train(net, train);
 }
 
