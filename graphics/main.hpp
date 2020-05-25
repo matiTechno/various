@@ -1,6 +1,7 @@
 #pragma once
 #include <math.h>
 #define pi (3.14159265359f)
+typedef unsigned char u8;
 
 struct vec3
 {
@@ -40,6 +41,11 @@ vec3 operator+(vec3 lhs, vec3 rhs)
 vec3 operator-(vec3 lhs, vec3 rhs)
 {
     return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
+vec3 operator*(float scalar, vec3 rhs)
+{
+    return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z};
 }
 
 // matrix functions assume row based matrix storage (row1, row2, row3, ...)
