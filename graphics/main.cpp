@@ -143,67 +143,153 @@ void ras_clear_buffers()
     memset(_ras.color_buf, 0, _ras.width * _ras.height * 3);
 }
 
+void _ras_draw1(vec4* coords, vec3* colors);
+void _ras_draw2(vec4* coords, vec3* colors);
+
+void ras_draw(Vertex* verts, int count, mat4 transform)
+{
+    for(int base = 0; base < count; base += 3)
+    {
+        vec4 coords[3];
+        vec3 colors[3];
+
+        for(int j = 0; j < 3; ++j)
+        {
+            coords[j].x = verts[base + j].pos.x;
+            coords[j].y = verts[base + j].pos.y;
+            coords[j].z = verts[base + j].pos.z;
+            coords[j].w = 1;
+            coords[j] = mul(transform, coords[j]);
+            colors[j] = verts[base + j].color;
+        }
+        _ras_draw1(coords, colors);
+    }
+}
+
+#define W_CLIP 0.001f
+
+void _ras_draw1(vec4* coords, vec3* colors)
+{
+    int out_codes[3] = {};
+    int w_code = 0;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        float w = coords[i].w;
+        int code = 0;
+        code = code | ((coords[i].x < -w) << 0);
+        code = code | ((coords[i].y < -w) << 1);
+        code = code | ((coords[i].z < -w) << 2);
+        code = code | ((coords[i].x > w)  << 3);
+        code = code | ((coords[i].y > w)  << 4);
+        code = code | ((coords[i].z > w)  << 5);
+        out_codes[i] = code;
+        w_code += w < W_CLIP;
+    }
+    // all vertices are on the external side of a clipping plane
+    if(out_codes[0] & out_codes[1] & out_codes[2])
+        return;
+
+    // w=0 plane clipping
+
+    if(w_code == 1) // in this case a new triangle is generated
+    {
+        int idx_prev = 2;
+        int idx_next = 1;
+
+        for(int i = 0; i < 2; ++i)
+        {
+            if(coords[i].w * coords[idx_prev].w <= 0)
+            {
+
+            }
+            idx_prev = i;
+            idx_next += 1;
+        }
+        return;
+    }
+    else if(w_code == 2)
+    {
+        int idx_next = 0;
+        int idx_prev = 1;
+        int idx_curr = 2;
+
+        for(int i = 0; i < 3; ++i)
+        {
+            float w0 = coords[idx_curr].w;
+
+            if(w0 >= W_CLIP)
+            {
+                float w1 = coords[idx_prev].w;
+                float w2 = coords[idx_next].w;
+                float t1 = (W_CLIP - w0) / (w1 - w0);
+                float t2 = (W_CLIP - w0) / (w2 - w0);
+                coords[idx_prev] = coords[idx_curr] + t1*(coords[idx_prev] - coords[idx_curr]);
+                coords[idx_next] = coords[idx_curr] + t2*(coords[idx_next] - coords[idx_curr]);
+                colors[idx_prev] = colors[idx_curr] + t1*(colors[idx_prev] - colors[idx_curr]);
+                colors[idx_next] = colors[idx_curr] + t2*(colors[idx_next] - colors[idx_curr]);
+                break;
+            }
+            idx_prev = idx_curr;
+            idx_curr = idx_next;
+            idx_next += 1;
+        }
+        // fall through
+    }
+    _ras_draw2(coords, colors);
+}
+
 float signed_area(float lhs_x, float lhs_y, float rhs_x, float rhs_y)
 {
     return (lhs_x * rhs_y) - (lhs_y * rhs_x);
 }
 
-void ras_render(Vertex* verts, mat4 transform)
+void _ras_draw2(vec4* coords, vec3* colors)
 {
-    vec4 clip_coords[3];
-
-    for(int i = 0; i < 3; ++i)
-    {
-        vec3 p = verts[i].pos;
-        vec4 hp = {p.x, p.y, p.z, 1};
-        clip_coords[i] = mul(transform, hp);
-    }
-
-    // todo: clipping
-
-    vec3 ndc_coords[3];
-
     for(int i = 0; i < 3; ++i)
     {
         // perspective division
-        ndc_coords[i].x = clip_coords[i].x / clip_coords[i].w;
-        ndc_coords[i].y = clip_coords[i].y / clip_coords[i].w;
-        ndc_coords[i].z = clip_coords[i].z / clip_coords[i].w;
-    }
+        coords[i].x = coords[i].x / coords[i].w;
+        coords[i].y = coords[i].y / coords[i].w;
+        coords[i].z = coords[i].z / coords[i].w;
 
-    vec3 win_coords[3];
-    float w_inv[3];
-
-    for(int i = 0; i < 3; ++i)
-    {
         // viewport transform
-        win_coords[i].x = (_ras.width / 2.f) * (ndc_coords[i].x + 1.f);
-        win_coords[i].y = (_ras.height / 2.f) * (ndc_coords[i].y + 1.f);
-        win_coords[i].z = (1.f / 2.f) * (ndc_coords[i].z + 1.f);
-        w_inv[i] = 1.f / clip_coords[i].w;
+        coords[i].x = (_ras.width / 2.f) * (coords[i].x + 1.f);
+        coords[i].y = (_ras.height / 2.f) * (coords[i].y + 1.f);
+        coords[i].z = (1.f / 2.f) * (coords[i].z + 1.f);
+        coords[i].w = 1.f / coords[i].w;
     }
 
     // face culling
-    vec3 arm01 = win_coords[1] - win_coords[0];
-    vec3 arm12 = win_coords[2] - win_coords[1];
-    vec3 arm20 = win_coords[0] - win_coords[2];
-    float area = signed_area(arm01.x, arm01.y, arm12.x, arm12.y);
+    float arm01x = coords[1].x - coords[0].x;
+    float arm01y = coords[1].y - coords[0].y;
+    float arm12x = coords[2].x - coords[1].x;
+    float arm12y = coords[2].y - coords[1].y;
+    float arm20x = coords[0].x - coords[2].x;
+    float arm20y = coords[0].y - coords[2].y;
+    float area = signed_area(arm01x, arm01y, arm12x, arm12y);
 
     if(area < 0)
         return;
 
-    int min_x = win_coords[0].x;
+    int min_x = coords[0].x;
     int max_x = min_x;
-    int min_y = win_coords[0].y;
+    int min_y = coords[0].y;
     int max_y = min_y;
 
     for(int i = 1; i < 3; ++i)
     {
-        min_x = win_coords[i].x < min_x ? win_coords[i].x : min_x;
-        max_x = win_coords[i].x > max_x ? win_coords[i].x : max_x;
-        min_y = win_coords[i].y < min_y ? win_coords[i].y : min_y;
-        max_y = win_coords[i].y > max_y ? win_coords[i].y : max_y;
+        min_x = coords[i].x < min_x ? coords[i].x : min_x;
+        max_x = coords[i].x > max_x ? coords[i].x : max_x;
+        min_y = coords[i].y < min_y ? coords[i].y : min_y;
+        max_y = coords[i].y > max_y ? coords[i].y : max_y;
     }
+
+    // clip a triangle bounding box to a viewport area
+    min_x = min_x < 0 ? 0 : min_x;
+    min_y = min_y < 0 ? 0 : min_y;
+    max_x = max_x >= _ras.width  ? _ras.width  - 1 : max_x;
+    max_y = max_y >= _ras.height ? _ras.height - 1 : max_y;
 
     for(int y = min_y; y <= max_y; ++y)
     {
@@ -211,24 +297,30 @@ void ras_render(Vertex* verts, mat4 transform)
         {
             float px = x + 0.5f;
             float py = y + 0.5f;
-            float b0 = signed_area(arm12.x, arm12.y, px - win_coords[1].x, py - win_coords[1].y) / area;
-            float b1 = signed_area(arm20.x, arm20.y, px - win_coords[2].x, py - win_coords[2].y) / area;
-            float b2 = signed_area(arm01.x, arm01.y, px - win_coords[0].x, py - win_coords[0].y) / area;
+            float b0 = signed_area(arm12x, arm12y, px - coords[1].x, py - coords[1].y) / area;
+            float b1 = signed_area(arm20x, arm20y, px - coords[2].x, py - coords[2].y) / area;
+            float b2 = signed_area(arm01x, arm01y, px - coords[0].x, py - coords[0].y) / area;
 
             if(b0 < 0 || b1 < 0 || b2 < 0)
                 continue;
 
-            float depth = (b0 * win_coords[0].z) + (b1 * win_coords[1].z) + (b2 * win_coords[2].z);
+            float depth = (b0 * coords[0].z) + (b1 * coords[1].z) + (b2 * coords[2].z);
+
+            // per fragment clipping against near and far planes
+            if(depth < 0.f || depth > 1.f)
+                continue;
+
             int idx = y * _ras.width + x;
 
+            // z-test
             if(depth > _ras.depth_buf[idx])
                 continue;
 
             _ras.depth_buf[idx] = depth;
 
             // perspective correct interpolation
-            vec3 color = (b0 * w_inv[0] * verts[0].color) + (b1 * w_inv[1] * verts[1].color) + (b2 * w_inv[2] * verts[2].color);
-            color = 1.f / (b0 * w_inv[0] + b1 * w_inv[1] + b2 * w_inv[2]) * color;
+            vec3 color = (b0 * coords[0].w * colors[0]) + (b1 * coords[1].w * colors[1]) + (b2 * coords[2].w * colors[2]);
+            color = 1.f / (b0 * coords[0].w + b1 * coords[1].w + b2 * coords[2].w) * color;
 
             _ras.color_buf[idx*3 + 0] = 255.f * color.x + 0.5f;
             _ras.color_buf[idx*3 + 1] = 255.f * color.y + 0.5f;
@@ -245,6 +337,7 @@ int main()
     }
 
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_OPENGL);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -257,12 +350,12 @@ int main()
     glEnable(GL_DEPTH_TEST);
 
     Vertex triangle[3];
+    triangle[0].pos = {-0.5, 0, 4};
+    triangle[1].pos = {0.5, 0, 4};
+    triangle[2].pos = {0, 1, -5};
     triangle[0].color = {1, 0, 0};
-    triangle[0].pos = {-0.5, -0.5, -2};
     triangle[1].color = {0, 1, 0};
-    triangle[1].pos = {0.5, -0.5, -2};
     triangle[2].color = {0, 0, 1};
-    triangle[2].pos = {0, 0.5, -3};
 
     GLuint vert_buffer;
     GLuint vert_array;
@@ -346,7 +439,7 @@ int main()
         {
             ras_viewport(width, height);
             ras_clear_buffers();
-            ras_render(triangle, mul(proj, view));
+            ras_draw(triangle, 3, mul(proj, view));
             ras_display();
         }
         else

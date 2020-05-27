@@ -48,6 +48,26 @@ vec3 operator*(float scalar, vec3 rhs)
     return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z};
 }
 
+vec4 operator-(vec4 v)
+{
+    return {-v.x, -v.y, -v.z, -v.w};
+}
+
+vec4 operator+(vec4 lhs, vec4 rhs)
+{
+    return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z, lhs.w + rhs.w};
+}
+
+vec4 operator-(vec4 lhs, vec4 rhs)
+{
+    return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z, lhs.w - rhs.w};
+}
+
+vec4 operator*(float scalar, vec4 rhs)
+{
+    return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z, scalar * rhs.w};
+}
+
 // matrix functions assume row based matrix storage (row1, row2, row3, ...)
 // vec3 and vec4 are treated as column vectors in matrix vector multiplication
 
