@@ -170,7 +170,7 @@ void ras_draw(Vertex* verts, int count, mat4 transform)
 
 void _ras_draw1(vec4* coords, vec3* colors)
 {
-    int out_codes[3] = {};
+    int out_codes[3];
     int w_code = 0;
 
     for(int i = 0; i < 3; ++i)
@@ -194,19 +194,38 @@ void _ras_draw1(vec4* coords, vec3* colors)
 
     if(w_code == 1) // in this case a new triangle is generated
     {
-        int idx_prev = 2;
-        int idx_next = 1;
+        vec4 coords2[3];
+        vec3 colors2[3];
+        memcpy(coords2, coords, sizeof(coords2));
+        memcpy(colors2, colors, sizeof(colors2));
+        int idx_next = 0;
+        int idx_prev = 1;
+        int idx_curr = 2;
 
-        for(int i = 0; i < 2; ++i)
+        for(int i = 0; i < 3; ++i)
         {
-            if(coords[i].w * coords[idx_prev].w <= 0)
-            {
+            float w0 = coords[idx_curr].w;
 
+            if(w0 < W_CLIP)
+            {
+                float w1 = coords[idx_prev].w;
+                float w2 = coords[idx_next].w;
+                float t1 = (W_CLIP - w0) / (w1 - w0);
+                float t2 = (W_CLIP - w0) / (w2 - w0);
+                coords[idx_curr] = coords[idx_curr] + t1*(coords[idx_prev] - coords[idx_curr]);
+                colors[idx_curr] = colors[idx_curr] + t1*(colors[idx_prev] - colors[idx_curr]);
+                coords2[idx_prev] = coords[idx_curr];
+                colors2[idx_prev] = colors[idx_curr];
+                coords2[idx_curr] = coords2[idx_curr] + t2*(coords2[idx_next] - coords2[idx_curr]);
+                colors2[idx_curr] = colors2[idx_curr] + t2*(colors2[idx_next] - colors2[idx_curr]);
+                break;
             }
-            idx_prev = i;
+            idx_prev = idx_curr;
+            idx_curr = idx_next;
             idx_next += 1;
         }
-        return;
+        _ras_draw2(coords, colors);
+        _ras_draw2(coords2, colors2);
     }
     else if(w_code == 2)
     {
@@ -225,8 +244,8 @@ void _ras_draw1(vec4* coords, vec3* colors)
                 float t1 = (W_CLIP - w0) / (w1 - w0);
                 float t2 = (W_CLIP - w0) / (w2 - w0);
                 coords[idx_prev] = coords[idx_curr] + t1*(coords[idx_prev] - coords[idx_curr]);
-                coords[idx_next] = coords[idx_curr] + t2*(coords[idx_next] - coords[idx_curr]);
                 colors[idx_prev] = colors[idx_curr] + t1*(colors[idx_prev] - colors[idx_curr]);
+                coords[idx_next] = coords[idx_curr] + t2*(coords[idx_next] - coords[idx_curr]);
                 colors[idx_next] = colors[idx_curr] + t2*(colors[idx_next] - colors[idx_curr]);
                 break;
             }
@@ -234,9 +253,10 @@ void _ras_draw1(vec4* coords, vec3* colors)
             idx_curr = idx_next;
             idx_next += 1;
         }
-        // fall through
+        _ras_draw2(coords, colors);
     }
-    _ras_draw2(coords, colors);
+    else
+        _ras_draw2(coords, colors);
 }
 
 float signed_area(float lhs_x, float lhs_y, float rhs_x, float rhs_y)
