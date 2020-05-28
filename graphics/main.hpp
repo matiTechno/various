@@ -8,24 +8,6 @@ struct vec3
     float x;
     float y;
     float z;
-
-    float* data()
-    {
-        return &x;
-    }
-};
-
-struct vec4
-{
-    float x;
-    float y;
-    float z;
-    float w;
-
-    float* data()
-    {
-        return &x;
-    }
 };
 
 vec3 operator-(vec3 v)
@@ -47,6 +29,14 @@ vec3 operator*(float scalar, vec3 rhs)
 {
     return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z};
 }
+
+struct vec4
+{
+    float x;
+    float y;
+    float z;
+    float w;
+};
 
 vec4 operator-(vec4 v)
 {
@@ -126,7 +116,7 @@ vec3 mul(mat3 lhs, vec3 rhs)
     vec3 product;
 
     for(int i = 0; i < 3; ++i)
-        product.data()[i] = dot(vec3{lhs.data[i*3], lhs.data[i*3 + 1], lhs.data[i*3 + 2]}, rhs);
+        (&product.x)[i] = dot(vec3{lhs.data[i*3], lhs.data[i*3 + 1], lhs.data[i*3 + 2]}, rhs);
     return product;
 }
 
@@ -135,7 +125,7 @@ vec4 mul(mat4 lhs, vec4 rhs)
     vec4 product;
 
     for(int i = 0; i < 4; ++i)
-        product.data()[i] = dot(vec4{lhs.data[i*4], lhs.data[i*4 + 1], lhs.data[i*4 + 2], lhs.data[i*4 + 3]}, rhs);
+        (&product.x)[i] = dot(vec4{lhs.data[i*4], lhs.data[i*4 + 1], lhs.data[i*4 + 2], lhs.data[i*4 + 3]}, rhs);
     return product;
 }
 
@@ -297,6 +287,24 @@ mat4 rotate_z(float angle)
     return m;
 }
 
+mat4 rotate_axis(vec3 a, float angle)
+{
+    float s = sinf(angle);
+    float c = cosf(angle);
+    mat4 m = {};
+    m.data[0] = c + ((1-c) * a.x * a.x);
+    m.data[1] = ((1-c) * a.x * a.y) - (s * a.z);
+    m.data[2] = ((1-c) * a.x * a.z) + (s * a.y);
+    m.data[4] = ((1-c) * a.x * a.y) + (s * a.z);
+    m.data[5] = c + ((1-c) * a.y * a.y);
+    m.data[6] = ((1-c) * a.y * a.z) - (s * a.x);
+    m.data[8] = ((1-c) * a.x * a.z) - (s * a.y);
+    m.data[9] = ((1-c) * a.y * a.z) + (s * a.x);
+    m.data[10] = c + ((1-c) * a.z * a.z);
+    m.data[15] = 1;
+    return m;
+}
+
 // transforms from world coordinates to camera coordinates
 
 mat4 lookat(vec3 pos, vec3 dir)
@@ -365,16 +373,59 @@ mat4 orthographic(float l, float r, float b, float t, float n, float f)
     return m;
 }
 
-/*
-mat3 inverse(mat3 lhs)
+mat3 inverse(mat3 m)
 {
+    mat3 inv;
+    inv.data[0] = m.data[4]*m.data[8] - m.data[5]*m.data[7];
+    inv.data[1] = m.data[2]*m.data[7] - m.data[1]*m.data[8];
+    inv.data[2] = m.data[1]*m.data[5] - m.data[2]*m.data[4];
+    inv.data[3] = m.data[5]*m.data[6] - m.data[3]*m.data[8];
+    inv.data[4] = m.data[0]*m.data[8] - m.data[2]*m.data[6];
+    inv.data[5] = m.data[2]*m.data[3] - m.data[0]*m.data[5];
+    inv.data[6] = m.data[3]*m.data[7] - m.data[4]*m.data[6];
+    inv.data[7] = m.data[1]*m.data[6] - m.data[0]*m.data[7];
+    inv.data[8] = m.data[0]*m.data[4] - m.data[1]*m.data[3];
 
+    float det = (m.data[0]*inv.data[0]) + (m.data[1]*inv.data[3]) + (m.data[2]*inv.data[6]);
+
+    for(int i = 0; i < 9; ++i)
+        inv.data[i] /= det;
+    return inv;
 }
 
-mat4 inverse(mat4 lhs)
+vec4 quat_mul(vec4 q1, vec4 q2)
 {
-
+    vec4 p;
+    p.w = (q1.w * q2.w) - (q1.x * q2.x) - (q1.y * q2.y) - (q1.z * q2.z);
+    p.x = (q1.w * q2.x) + (q1.x * q2.w) + (q1.y * q2.z) - (q1.z * q2.y);
+    p.y = (q1.w * q2.y) - (q1.x * q2.z) + (q1.y * q2.w) + (q1.z * q2.x);
+    p.z = (q1.w * q2.z) + (q1.x * q2.y) - (q1.y * q2.x) + (q1.z * q2.w);
+    return p;
 }
-*/
 
-// quaternions
+vec4 quat_rot(vec3 axis, float angle)
+{
+    float s = sinf(angle / 2);
+    vec4 q;
+    q.w = cosf(angle / 2);
+    q.x = s * axis.x;
+    q.y = s * axis.y;
+    q.z = s * axis.z;
+    return q;
+}
+
+mat4 quat_to_mat4(vec4 q)
+{
+    mat4 m = {};
+    m.data[0] = 1 - (2 * q.y * q.y) - (2 * q.z * q.z);
+    m.data[1] = (2 * q.x * q.y) - (2 * q.w * q.z);
+    m.data[2] = (2 * q.x * q.z) + (2 * q.w * q.y);
+    m.data[4] = (2 * q.x * q.y) + (2 * q.w * q.z);
+    m.data[5] = 1 - (2 * q.x * q.x) - (2* q.z * q.z);
+    m.data[6] = (2 * q.y * q.z) - (2 * q.w * q.x);
+    m.data[8] = (2 * q.x * q.z) - (2 * q.w * q.y);
+    m.data[9] = (2 * q.y * q.z) + (2 * q.w * q.x);
+    m.data[10] = 1 - (2 * q.x * q.x) - (2 * q.y * q.y);
+    m.data[15] = 1;
+    return m;
+}
