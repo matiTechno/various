@@ -2,6 +2,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <float.h>
 #include "glad.h"
 #include "main.hpp"
 
@@ -281,13 +283,13 @@ void _ras_draw2(vec4* coords, vec3* colors)
     }
 
     // face culling
-    float arm01x = coords[1].x - coords[0].x;
-    float arm01y = coords[1].y - coords[0].y;
-    float arm12x = coords[2].x - coords[1].x;
-    float arm12y = coords[2].y - coords[1].y;
-    float arm20x = coords[0].x - coords[2].x;
-    float arm20y = coords[0].y - coords[2].y;
-    float area = signed_area(arm01x, arm01y, arm12x, arm12y);
+    float edge01x = coords[1].x - coords[0].x;
+    float edge01y = coords[1].y - coords[0].y;
+    float edge12x = coords[2].x - coords[1].x;
+    float edge12y = coords[2].y - coords[1].y;
+    float edge20x = coords[0].x - coords[2].x;
+    float edge20y = coords[0].y - coords[2].y;
+    float area = signed_area(edge01x, edge01y, edge12x, edge12y);
 
     if(area < 0)
         return;
@@ -317,9 +319,9 @@ void _ras_draw2(vec4* coords, vec3* colors)
         {
             float px = x + 0.5f;
             float py = y + 0.5f;
-            float b0 = signed_area(arm12x, arm12y, px - coords[1].x, py - coords[1].y) / area;
-            float b1 = signed_area(arm20x, arm20y, px - coords[2].x, py - coords[2].y) / area;
-            float b2 = signed_area(arm01x, arm01y, px - coords[0].x, py - coords[0].y) / area;
+            float b0 = signed_area(edge12x, edge12y, px - coords[1].x, py - coords[1].y) / area;
+            float b1 = signed_area(edge20x, edge20y, px - coords[2].x, py - coords[2].y) / area;
+            float b2 = signed_area(edge01x, edge01y, px - coords[0].x, py - coords[0].y) / area;
 
             if(b0 < 0 || b1 < 0 || b2 < 0)
                 continue;
@@ -349,6 +351,84 @@ void _ras_draw2(vec4* coords, vec3* colors)
     }
 }
 
+void extract_frustum(mat4 persp, float& l, float& r, float& b, float& t, float& n, float& f)
+{
+    n = persp.data[11] / (persp.data[10] - 1);
+    f = persp.data[11] / (persp.data[10] + 1);
+    l = n*(persp.data[2] - 1) / persp.data[0];
+    r = n*(persp.data[2] + 1) / persp.data[0];
+    b = n*(persp.data[6] - 1) / persp.data[5];
+    t = n*(persp.data[6] + 1) / persp.data[5];
+}
+
+void raytracer_draw(Vertex* verts, int count, mat4 proj, mat4 view)
+{
+    // exit if projection is orthographic
+    // todo
+    if(!proj.data[14])
+        return;
+
+    float left, right, bot, top, near, far;
+    extract_frustum(proj, left, right, bot, top, near, far);
+    int width = _ras.width;
+    int height = _ras.height;
+    mat3 eye_basis = transpose(mat4_to_mat3(view)); // change of basis matrix
+    vec3 eye_pos = -1 * mul( eye_basis, vec3{view.data[3], view.data[7], view.data[11]} );
+    vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
+
+    for(int idx = 0; idx < width * height; ++idx)
+    {
+        int pix_x = idx % width;
+        int pix_y = idx / width;
+        float x = ((right - left)/width) * (pix_x + 0.5f) + left;
+        float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
+        float z = -near;
+        vec3 ray_dir = normalize( mul(eye_basis, vec3{x, y, z}) );
+        float min_t = FLT_MAX;
+
+        for(int base = 0; base < count; base += 3)
+        {
+            vec3 edge01 = verts[base + 1].pos - verts[base + 0].pos;
+            vec3 edge12 = verts[base + 2].pos - verts[base + 1].pos;
+            vec3 edge20 = verts[base + 0].pos - verts[base + 2].pos;
+            vec3 normal = cross(edge01, edge12);
+            float area = length(normal);
+            normal = (1 / area) * normal; // normalize
+
+            // face culling
+            if(dot(normal, -ray_dir) < 0.f)
+                continue;
+
+            float t = (dot(normal, verts[base].pos) - dot(normal, eye_pos)) / dot(normal, ray_dir);
+
+            // depth test
+            if(t > min_t)
+                continue;
+
+            float dist_z = dot(eye_dir, t*ray_dir);
+
+            // far / near plane cull
+            if(dist_z < near || dist_z > far)
+                continue;
+
+            vec3 p = eye_pos + t*ray_dir;
+            float b0 = dot(normal, cross(edge12, p - verts[base + 1].pos)) / area;
+            float b1 = dot(normal, cross(edge20, p - verts[base + 2].pos)) / area;
+            float b2 = dot(normal, cross(edge01, p - verts[base + 0].pos)) / area;
+
+            // point on a plane is not in a triangle
+            if(b0 < 0 || b1 < 0 || b2 < 0)
+                continue;
+
+            // shading
+            vec3 color = b0*verts[base+0].color + b1*verts[base+1].color + b2*verts[base+2].color;
+            _ras.color_buf[idx*3 + 0] = 255.f * color.x + 0.5f;
+            _ras.color_buf[idx*3 + 1] = 255.f * color.y + 0.5f;
+            _ras.color_buf[idx*3 + 2] = 255.f * color.z + 0.5f;
+        }
+    }
+}
+
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -356,8 +436,8 @@ int main()
         assert(false);
     }
 
-    SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
-    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
+    SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 800, 800, SDL_WINDOW_OPENGL);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -411,9 +491,9 @@ int main()
 
     bool quit = false;
     bool enable_move = false;
-    bool use_ras = false;
-
-    vec3 camera_pos = {0.f, 1.f, 3.f};
+    int render_mode = 0;
+    bool use_persp = true;
+    vec3 camera_pos = {0.f, 1.f, 5.f};
     float pitch = 0;
     float yaw = 0;
 
@@ -437,7 +517,16 @@ int main()
                     SDL_SetRelativeMouseMode(enable_move ? SDL_TRUE : SDL_FALSE);
                     break;
                 case SDLK_1:
-                    use_ras = !use_ras;
+                    render_mode += 1;
+
+                    if(render_mode > 2)
+                        render_mode = 0;
+
+                    printf("switched to %s\n", render_mode == 0 ? "OpenGL" : render_mode == 1 ? "software rasterizer" : "raytracer");
+                    break;
+                case SDLK_2:
+                    use_persp = !use_persp;
+                    printf("switched to %s projection\n", use_persp ? "perspective" : "orthographic");
                     break;
                 }
             }
@@ -453,17 +542,18 @@ int main()
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
         mat4 view = lookat(camera_pos, yaw, pitch);
-        mat4 proj = perspective(90, (float)width/height, 0.1f, 100.f);
-
-        if(use_ras)
+        mat4 persp = perspective(90, (float)width/height, 0.1f, 100.f);
+        mat4 ortho;
         {
-            ras_viewport(width, height);
-            ras_clear_buffers();
-            ras_draw(triangle, 3, mul(proj, view));
-            ras_display();
+            float l, r, b, t, n, f;
+            extract_frustum(persp, l, r, b, t, n, f);
+            ortho = orthographic(l, r, b, t, n, f);
         }
-        else
+        mat4 proj = use_persp ? persp : ortho;
+
+        switch(render_mode)
         {
+        case 0:
             glViewport(0, 0, width, height);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glBindVertexArray(vert_array);
@@ -471,6 +561,21 @@ int main()
             glUniformMatrix4fv(view_loc, 1, GL_TRUE, view.data);
             glUniformMatrix4fv(proj_loc, 1, GL_TRUE, proj.data);
             glDrawArrays(GL_TRIANGLES, 0, 3);
+            break;
+        case 1:
+            ras_viewport(width, height);
+            ras_clear_buffers();
+            ras_draw(triangle, 3, mul(proj, view));
+            ras_display();
+            break;
+        case 2:
+            ras_viewport(width, height);
+            ras_clear_buffers();
+            raytracer_draw(triangle, 3, proj, view);
+            ras_display();
+            break;
+        default:
+            assert(false);
         }
         SDL_GL_SwapWindow(window);
     }

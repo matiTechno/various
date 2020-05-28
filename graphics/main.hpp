@@ -193,6 +193,19 @@ mat4 transpose(mat4 lhs)
     return t;
 }
 
+mat3 mat4_to_mat3(mat4 m4)
+{
+    mat3 m3;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        m3.data[i*3 + 0] = m4.data[i*4 + 0];
+        m3.data[i*3 + 1] = m4.data[i*4 + 1];
+        m3.data[i*3 + 2] = m4.data[i*4 + 2];
+    }
+    return m3;
+}
+
 float deg_to_rad(float d)
 {
     return 2.f * pi * d / 360.f;
@@ -339,7 +352,7 @@ mat4 perspective(float fovy, float aspect, float near, float far)
     return frustum(-right, right, -top, top, near, far);
 }
 
-mat4 ortho(float l, float r, float b, float t, float n, float f)
+mat4 orthographic(float l, float r, float b, float t, float n, float f)
 {
     mat4 m = {};
     m.data[0] = 2/(r-l);
