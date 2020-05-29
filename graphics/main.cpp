@@ -7,35 +7,74 @@
 #include "glad.h"
 #include "main.hpp"
 
-struct Vertex
+struct RenderCmd
 {
-    vec3 pos;
-    vec3 color;
+    mat4 view;
+    mat4 proj;
+    vec3 light_intensity;
+    vec3 light_dir;
+    float ambient_intensity;
+    vec3 eye_pos;
+    // model data
+    vec3* positions;
+    vec3* normals;
+    int vertex_count;
+    mat4 model_transform;
+    vec3 diffuse_color;
+    vec3 specular_color;
+    float specular_exp;
 };
 
 static const char* src_vert = R"(
 #version 330
+
 uniform mat4 view;
 uniform mat4 proj;
+uniform mat4 model;
+
 layout(location = 0) in vec3 pos;
-layout(location = 1) in vec3 color;
-out vec3 fcolor;
+layout(location = 1) in vec3 normal;
+
+// in world space
+out vec3 frag_pos;
+out vec3 frag_normal;
 
 void main()
 {
-    gl_Position = proj * view * vec4(pos, 1);
-    fcolor = color;
+    vec4 pos_w = model * vec4(pos, 1);
+    gl_Position = proj * view * model * pos_w;
+    frag_pos = vec3(pos_w);
+    frag_normal = mat3(model) * normal;
 }
 )";
 
 static const char* src_frag = R"(
 #version 330
-in vec3 fcolor;
+
+uniform vec3 light_intensity;
+uniform vec3 light_dir;
+uniform float ambient_intensity;
+uniform vec3 diffuse_color;
+uniform vec3 specular_color;
+uniform float specular_exp;
+uniform vec3 eye_pos;
+
+in vec3 frag_pos;
+in vec3 frag_normal;
 out vec3 out_color;
 
 void main()
 {
-    out_color = fcolor;
+    vec3 L = light_dir;
+    vec3 N = normalize(frag_normal);
+    vec3 ambient_comp = diffuse_color * ambient_intensity;
+    vec3 diff_comp = diffuse_color * light_intensity * max(dot(N, L), 0);
+
+    vec3 V = normalize(eye_pos - frag_pos);
+    vec3 H = normalize(V + L);
+    vec3 spec_comp = specular_color * light_intensity * pow( max(dot(N, H), 0), specular_exp) * float(dot(N, L) > 0);
+
+    out_color = ambient_comp + diff_comp + spec_comp;
 }
 )";
 
@@ -145,32 +184,69 @@ void ras_clear_buffers()
     memset(_ras.color_buf, 0, _ras.width * _ras.height * 3);
 }
 
-void _ras_draw1(vec4* coords, vec3* colors);
-void _ras_draw2(vec4* coords, vec3* colors);
+#define VFLOAT_COUNT 6
 
-void ras_draw(Vertex* verts, int count, mat4 transform)
+union Varying
 {
-    for(int base = 0; base < count; base += 3)
+    struct
+    {
+        vec3 frag_pos;
+        vec3 frag_normal;
+    };
+    float data[VFLOAT_COUNT];
+};
+
+Varying operator+(Varying lhs, Varying rhs)
+{
+    for(int i = 0; i < VFLOAT_COUNT; ++i)
+        lhs.data[i] += rhs.data[i];
+    return lhs;
+}
+
+Varying operator-(Varying lhs, Varying rhs)
+{
+    for(int i = 0; i < VFLOAT_COUNT; ++i)
+        lhs.data[i] -= rhs.data[i];
+    return lhs;
+}
+
+Varying operator*(float scalar, Varying v)
+{
+    for(int i = 0; i < VFLOAT_COUNT; ++i)
+        v.data[i] *= scalar;
+    return v;
+}
+
+void _ras_draw1(RenderCmd& cmd, vec4* coords, Varying* varyings);
+void _ras_draw2(RenderCmd& cmd, vec4* coords, Varying* varyings);
+
+void ras_draw(RenderCmd& cmd)
+{
+    // something like a fixed vertex shader
+    mat4 proj_view = mul(cmd.proj, cmd.view);
+    mat3 model3 = mat4_to_mat3(cmd.model_transform);
+
+    for(int base = 0; base < cmd.vertex_count; base += 3)
     {
         vec4 coords[3];
-        vec3 colors[3];
+        Varying varyings[3];
 
-        for(int j = 0; j < 3; ++j)
+        for(int i = 0; i < 3; ++i)
         {
-            coords[j].x = verts[base + j].pos.x;
-            coords[j].y = verts[base + j].pos.y;
-            coords[j].z = verts[base + j].pos.z;
-            coords[j].w = 1;
-            coords[j] = mul(transform, coords[j]);
-            colors[j] = verts[base + j].color;
+            vec3 vert_pos = cmd.positions[base + i];
+            coords[i] = {vert_pos.x, vert_pos.y, vert_pos.z, 1};
+            coords[i] = mul(cmd.model_transform, coords[i]);
+            varyings[i].frag_pos = {coords[i].x, coords[i].y, coords[i].z};
+            coords[i] = mul(proj_view, coords[i]);
+            varyings[i].frag_normal = mul(model3, cmd.normals[base + i]);
         }
-        _ras_draw1(coords, colors);
+        _ras_draw1(cmd, coords, varyings);
     }
 }
 
 #define W_CLIP 0.001f
 
-void _ras_draw1(vec4* coords, vec3* colors)
+void _ras_draw1(RenderCmd& cmd, vec4* coords, Varying* varyings)
 {
     int out_codes[3];
     int w_code = 0;
@@ -197,9 +273,9 @@ void _ras_draw1(vec4* coords, vec3* colors)
     if(w_code == 1) // in this case a new triangle is generated
     {
         vec4 coords2[3];
-        vec3 colors2[3];
+        Varying varyings2[3];
         memcpy(coords2, coords, sizeof(coords2));
-        memcpy(colors2, colors, sizeof(colors2));
+        memcpy(varyings2, varyings, sizeof(varyings2));
         int idx_next = 0;
         int idx_prev = 1;
         int idx_curr = 2;
@@ -215,19 +291,19 @@ void _ras_draw1(vec4* coords, vec3* colors)
                 float t1 = (W_CLIP - w0) / (w1 - w0);
                 float t2 = (W_CLIP - w0) / (w2 - w0);
                 coords[idx_curr] = coords[idx_curr] + t1*(coords[idx_prev] - coords[idx_curr]);
-                colors[idx_curr] = colors[idx_curr] + t1*(colors[idx_prev] - colors[idx_curr]);
+                varyings[idx_curr] = varyings[idx_curr] + t1*(varyings[idx_prev] - varyings[idx_curr]);
                 coords2[idx_prev] = coords[idx_curr];
-                colors2[idx_prev] = colors[idx_curr];
+                varyings2[idx_prev] = varyings[idx_curr];
                 coords2[idx_curr] = coords2[idx_curr] + t2*(coords2[idx_next] - coords2[idx_curr]);
-                colors2[idx_curr] = colors2[idx_curr] + t2*(colors2[idx_next] - colors2[idx_curr]);
+                varyings2[idx_curr] = varyings2[idx_curr] + t2*(varyings2[idx_next] - varyings2[idx_curr]);
                 break;
             }
             idx_prev = idx_curr;
             idx_curr = idx_next;
             idx_next += 1;
         }
-        _ras_draw2(coords, colors);
-        _ras_draw2(coords2, colors2);
+        _ras_draw2(cmd, coords, varyings);
+        _ras_draw2(cmd, coords2, varyings2);
     }
     else if(w_code == 2)
     {
@@ -246,19 +322,19 @@ void _ras_draw1(vec4* coords, vec3* colors)
                 float t1 = (W_CLIP - w0) / (w1 - w0);
                 float t2 = (W_CLIP - w0) / (w2 - w0);
                 coords[idx_prev] = coords[idx_curr] + t1*(coords[idx_prev] - coords[idx_curr]);
-                colors[idx_prev] = colors[idx_curr] + t1*(colors[idx_prev] - colors[idx_curr]);
+                varyings[idx_prev] = varyings[idx_curr] + t1*(varyings[idx_prev] - varyings[idx_curr]);
                 coords[idx_next] = coords[idx_curr] + t2*(coords[idx_next] - coords[idx_curr]);
-                colors[idx_next] = colors[idx_curr] + t2*(colors[idx_next] - colors[idx_curr]);
+                varyings[idx_next] = varyings[idx_curr] + t2*(varyings[idx_next] - varyings[idx_curr]);
                 break;
             }
             idx_prev = idx_curr;
             idx_curr = idx_next;
             idx_next += 1;
         }
-        _ras_draw2(coords, colors);
+        _ras_draw2(cmd, coords, varyings);
     }
     else
-        _ras_draw2(coords, colors);
+        _ras_draw2(cmd, coords, varyings);
 }
 
 float signed_area(float lhs_x, float lhs_y, float rhs_x, float rhs_y)
@@ -266,7 +342,17 @@ float signed_area(float lhs_x, float lhs_y, float rhs_x, float rhs_y)
     return (lhs_x * rhs_y) - (lhs_y * rhs_x);
 }
 
-void _ras_draw2(vec4* coords, vec3* colors)
+float max(float lhs, float rhs)
+{
+    return lhs > rhs ? lhs : rhs;
+}
+
+float min(float lhs, float rhs)
+{
+    return lhs < rhs ? lhs : rhs;
+}
+
+void _ras_draw2(RenderCmd& cmd, vec4* coords, Varying* varyings)
 {
     for(int i = 0; i < 3; ++i)
     {
@@ -341,9 +427,21 @@ void _ras_draw2(vec4* coords, vec3* colors)
             _ras.depth_buf[idx] = depth;
 
             // perspective correct interpolation
-            vec3 color = (b0 * coords[0].w * colors[0]) + (b1 * coords[1].w * colors[1]) + (b2 * coords[2].w * colors[2]);
-            color = 1.f / (b0 * coords[0].w + b1 * coords[1].w + b2 * coords[2].w) * color;
+            Varying varying = (b0 * coords[0].w * varyings[0]) + (b1 * coords[1].w * varyings[1]) + (b2 * coords[2].w * varyings[2]);
+            varying = 1.f / (b0 * coords[0].w + b1 * coords[1].w + b2 * coords[2].w) * varying;
 
+            // shading; fixed fragment shader
+            vec3 L = cmd.light_dir;
+            vec3 N = normalize(varying.frag_normal);
+            vec3 ambient_comp = cmd.ambient_intensity * cmd.diffuse_color;
+            vec3 diff_comp = max(dot(N, L), 0) * mul_cwise(cmd.diffuse_color, cmd.light_intensity);
+            vec3 V = normalize(cmd.eye_pos - varying.frag_pos);
+            vec3 H = normalize(V + L);
+            vec3 spec_comp = powf( max(dot(N, H), 0), cmd.specular_exp) * (dot(N, L) > 0) * mul_cwise(cmd.specular_color, cmd.light_intensity);
+            vec3 color = ambient_comp + diff_comp + spec_comp;
+            color.x = min(color.x, 1.f);
+            color.y = min(color.y, 1.f);
+            color.z = min(color.z, 1.f);
             _ras.color_buf[idx*3 + 0] = 255.f * color.x + 0.5f;
             _ras.color_buf[idx*3 + 1] = 255.f * color.y + 0.5f;
             _ras.color_buf[idx*3 + 2] = 255.f * color.z + 0.5f;
@@ -353,6 +451,7 @@ void _ras_draw2(vec4* coords, vec3* colors)
 
 void extract_frustum(mat4 persp, float& l, float& r, float& b, float& t, float& n, float& f)
 {
+    assert(persp.data[14]);
     n = persp.data[11] / (persp.data[10] - 1);
     f = persp.data[11] / (persp.data[10] + 1);
     l = n*(persp.data[2] - 1) / persp.data[0];
@@ -360,6 +459,7 @@ void extract_frustum(mat4 persp, float& l, float& r, float& b, float& t, float& 
     b = n*(persp.data[6] - 1) / persp.data[5];
     t = n*(persp.data[6] + 1) / persp.data[5];
 }
+/*
 
 void raytracer_draw(Vertex* verts, int count, mat4 proj, mat4 view)
 {
@@ -428,6 +528,7 @@ void raytracer_draw(Vertex* verts, int count, mat4 proj, mat4 view)
         }
     }
 }
+*/
 
 int main()
 {
@@ -435,7 +536,6 @@ int main()
     {
         assert(false);
     }
-
     //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 800, 800, SDL_WINDOW_OPENGL);
     assert(window);
@@ -448,14 +548,19 @@ int main()
     }
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_FRAMEBUFFER_SRGB);
 
-    Vertex triangle[3];
-    triangle[0].pos = {-0.5, 0, 4};
-    triangle[1].pos = {0.5, 0, 4};
-    triangle[2].pos = {0, 1, -5};
-    triangle[0].color = {1, 0, 0};
-    triangle[1].color = {0, 1, 0};
-    triangle[2].color = {0, 0, 1};
+    vec3 positions[3];
+    vec3 normals[3];
+    positions[0] = {-0.5, 0, 4};
+    positions[1] = {0.5, 0, 4};
+    positions[2] = {0, 0, -5};
+    {
+        vec3 e01 = positions[1] - positions[0];
+        vec3 e02 = positions[2] - positions[0];
+        vec3 normal = normalize(cross(e01, e02));
+        normals[0] = normals[1] = normals[2] = normal;
+    }
 
     GLuint vert_buffer;
     GLuint vert_array;
@@ -467,13 +572,15 @@ int main()
     glGenVertexArrays(1, &vert_array);
 
     glBindBuffer(GL_ARRAY_BUFFER, vert_buffer);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(triangle), triangle, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, 3 * 2 * sizeof(vec3), nullptr, GL_STATIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, 3 * sizeof(vec3), positions);
+    glBufferSubData(GL_ARRAY_BUFFER, 3 * sizeof(vec3), 3 * sizeof(vec3), normals);
 
     glBindVertexArray(vert_array);
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)sizeof(vec3));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void*)(3 * sizeof(vec3)));
 
     glShaderSource(vert_shader, 1, &src_vert, nullptr);
     glCompileShader(vert_shader);
@@ -484,9 +591,6 @@ int main()
     glLinkProgram(program);
     glUseProgram(program);
 
-    GLint view_loc = glGetUniformLocation(program, "view");
-    GLint proj_loc = glGetUniformLocation(program, "proj");
-
     ras_init();
 
     bool quit = false;
@@ -496,6 +600,18 @@ int main()
     vec3 camera_pos = {0.f, 1.f, 5.f};
     float pitch = 0;
     float yaw = 0;
+    RenderCmd cmd;
+    cmd.light_intensity = {0.2, 0.2, 0.2};
+    cmd.light_dir = normalize(vec3{-0.5, 1, -4});
+    cmd.ambient_intensity = 0.2f;
+
+    cmd.positions = positions;
+    cmd.normals = normals;
+    cmd.vertex_count = 3;
+    cmd.model_transform = identity4();
+    cmd.diffuse_color = {0.5, 0.5, 0.5};
+    cmd.specular_color = {0, 1, 0};
+    cmd.specular_exp = 20.f;
 
     while(!quit)
     {
@@ -541,7 +657,6 @@ int main()
         }
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
-        mat4 view = lookat(camera_pos, yaw, pitch);
         mat4 persp = perspective(90, (float)width/height, 0.1f, 100.f);
         mat4 ortho;
         {
@@ -549,29 +664,55 @@ int main()
             extract_frustum(persp, l, r, b, t, n, f);
             ortho = orthographic(l, r, b, t, n, f);
         }
-        mat4 proj = use_persp ? persp : ortho;
+        cmd.view = lookat(camera_pos, yaw, pitch);
+        cmd.proj = use_persp ? persp : ortho;
+        cmd.eye_pos = camera_pos;
 
         switch(render_mode)
         {
         case 0:
+        {
             glViewport(0, 0, width, height);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glBindVertexArray(vert_array);
             glUseProgram(program);
-            glUniformMatrix4fv(view_loc, 1, GL_TRUE, view.data);
-            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, proj.data);
+
+            GLint view_loc = glGetUniformLocation(program, "view");
+            GLint proj_loc = glGetUniformLocation(program, "proj");
+            GLint light_int_loc = glGetUniformLocation(program, "light_intensity");
+            GLint light_dir_loc = glGetUniformLocation(program, "light_dir");
+            GLint ambient_int_loc = glGetUniformLocation(program, "ambient_intensity");
+            GLint eye_pos_loc = glGetUniformLocation(program, "eye_pos");
+            glUniformMatrix4fv(view_loc, 1, GL_TRUE, cmd.view.data);
+            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, cmd.proj.data);
+            glUniform3fv(light_int_loc, 1, &cmd.light_intensity.x);
+            glUniform3fv(light_dir_loc, 1, &cmd.light_dir.x);
+            glUniform1f(ambient_int_loc, cmd.ambient_intensity);
+            glUniform3fv(eye_pos_loc, 1, &cmd.eye_pos.x);
+
+            // per model uniforms
+            GLint model_loc = glGetUniformLocation(program, "model");
+            GLint diffuse_color_loc = glGetUniformLocation(program, "diffuse_color");
+            GLint specular_color_loc = glGetUniformLocation(program, "specular_color");
+            GLint specular_exp_loc = glGetUniformLocation(program, "specular_exp");
+            glUniformMatrix4fv(model_loc, 1, GL_TRUE, cmd.model_transform.data);
+            glUniform3fv(diffuse_color_loc, 1, &cmd.diffuse_color.x);
+            glUniform3fv(specular_color_loc, 1, &cmd.specular_color.x);
+            glUniform1f(specular_exp_loc, cmd.specular_exp);
+
             glDrawArrays(GL_TRIANGLES, 0, 3);
             break;
+        }
         case 1:
             ras_viewport(width, height);
             ras_clear_buffers();
-            ras_draw(triangle, 3, mul(proj, view));
+            ras_draw(cmd);
             ras_display();
             break;
         case 2:
             ras_viewport(width, height);
             ras_clear_buffers();
-            raytracer_draw(triangle, 3, proj, view);
+            //raytracer_draw(triangle, 3, proj, view);
             ras_display();
             break;
         default:

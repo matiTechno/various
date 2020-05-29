@@ -30,6 +30,11 @@ vec3 operator*(float scalar, vec3 rhs)
     return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z};
 }
 
+vec3 mul_cwise(vec3 lhs, vec3 rhs)
+{
+    return {lhs.x * rhs.x, lhs.y * rhs.y, lhs.z * rhs.z};
+}
+
 struct vec4
 {
     float x;
