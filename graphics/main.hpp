@@ -10,26 +10,31 @@ struct vec3
     float z;
 };
 
+inline
 vec3 operator-(vec3 v)
 {
     return {-v.x, -v.y, -v.z};
 }
 
+inline
 vec3 operator+(vec3 lhs, vec3 rhs)
 {
     return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
 }
 
+inline
 vec3 operator-(vec3 lhs, vec3 rhs)
 {
     return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
 }
 
+inline
 vec3 operator*(float scalar, vec3 rhs)
 {
     return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z};
 }
 
+inline
 vec3 mul_cwise(vec3 lhs, vec3 rhs)
 {
     return {lhs.x * rhs.x, lhs.y * rhs.y, lhs.z * rhs.z};
@@ -43,21 +48,25 @@ struct vec4
     float w;
 };
 
+inline
 vec4 operator-(vec4 v)
 {
     return {-v.x, -v.y, -v.z, -v.w};
 }
 
+inline
 vec4 operator+(vec4 lhs, vec4 rhs)
 {
     return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z, lhs.w + rhs.w};
 }
 
+inline
 vec4 operator-(vec4 lhs, vec4 rhs)
 {
     return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z, lhs.w - rhs.w};
 }
 
+inline
 vec4 operator*(float scalar, vec4 rhs)
 {
     return {scalar * rhs.x, scalar * rhs.y, scalar * rhs.z, scalar * rhs.w};
@@ -76,32 +85,38 @@ struct mat4
     float data[16];
 };
 
+inline
 float dot(vec3 lhs, vec3 rhs)
 {
     return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
 }
 
+inline
 float dot(vec4 lhs, vec4 rhs)
 {
     return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z) + (lhs.w * rhs.w);
 }
 
+inline
 vec3 cross(vec3 lhs, vec3 rhs)
 {
     return {lhs.y * rhs.z - lhs.z * rhs.y, lhs.z * rhs.x - lhs.x * rhs.z, lhs.x * rhs.y - lhs.y * rhs.x};
 }
 
+inline
 float length(vec3 v)
 {
     return sqrtf(dot(v, v));
 }
 
+inline
 vec3 normalize(vec3 v)
 {
     float l = length(v);
     return {v.x / l, v.y / l, v.z / l};
 }
 
+inline
 mat3 add(mat3 lhs, mat3 rhs)
 {
     for(int i = 0; i < 9; ++i)
@@ -109,6 +124,7 @@ mat3 add(mat3 lhs, mat3 rhs)
     return lhs;
 }
 
+inline
 mat4 add(mat4 lhs, mat4 rhs)
 {
     for(int i = 0; i < 16; ++i)
@@ -116,6 +132,7 @@ mat4 add(mat4 lhs, mat4 rhs)
     return lhs;
 }
 
+inline
 vec3 mul(mat3 lhs, vec3 rhs)
 {
     vec3 product;
@@ -125,6 +142,7 @@ vec3 mul(mat3 lhs, vec3 rhs)
     return product;
 }
 
+inline
 vec4 mul(mat4 lhs, vec4 rhs)
 {
     vec4 product;
@@ -134,6 +152,7 @@ vec4 mul(mat4 lhs, vec4 rhs)
     return product;
 }
 
+inline
 mat3 mul(mat3 lhs, mat3 rhs)
 {
     for(int y = 0; y < 3; ++y)
@@ -147,6 +166,7 @@ mat3 mul(mat3 lhs, mat3 rhs)
     return rhs;
 }
 
+inline
 mat4 mul(mat4 lhs, mat4 rhs)
 {
     for(int y = 0; y < 4; ++y)
@@ -161,6 +181,7 @@ mat4 mul(mat4 lhs, mat4 rhs)
     return rhs;
 }
 
+inline
 mat3 transpose(mat3 lhs)
 {
     mat3 t;
@@ -174,6 +195,7 @@ mat3 transpose(mat3 lhs)
     return t;
 }
 
+inline
 mat4 transpose(mat4 lhs)
 {
     mat4 t;
@@ -188,6 +210,7 @@ mat4 transpose(mat4 lhs)
     return t;
 }
 
+inline
 mat3 mat4_to_mat3(mat4 m4)
 {
     mat3 m3;
@@ -201,11 +224,13 @@ mat3 mat4_to_mat3(mat4 m4)
     return m3;
 }
 
+inline
 float deg_to_rad(float d)
 {
     return 2.f * pi * d / 360.f;
 }
 
+inline
 mat3 identity3()
 {
     mat3 m = {};
@@ -215,6 +240,7 @@ mat3 identity3()
     return m;
 }
 
+inline
 mat4 identity4()
 {
     mat4 m = {};
@@ -225,6 +251,7 @@ mat4 identity4()
     return m;
 }
 
+inline
 mat4 translate(vec3 v)
 {
     mat4 m = {};
@@ -238,6 +265,7 @@ mat4 translate(vec3 v)
     return m;
 }
 
+inline
 mat4 scale(vec3 v)
 {
     mat4 m = {};
@@ -250,6 +278,7 @@ mat4 scale(vec3 v)
 
 // angle is in radians
 
+inline
 mat4 rotate_x(float angle)
 {
     float s = sinf(angle);
@@ -264,6 +293,7 @@ mat4 rotate_x(float angle)
     return m;
 }
 
+inline
 mat4 rotate_y(float angle)
 {
     float s = sinf(angle);
@@ -278,6 +308,7 @@ mat4 rotate_y(float angle)
     return m;
 }
 
+inline
 mat4 rotate_z(float angle)
 {
     float s = sinf(angle);
@@ -292,6 +323,7 @@ mat4 rotate_z(float angle)
     return m;
 }
 
+inline
 mat4 rotate_axis(vec3 a, float angle)
 {
     float s = sinf(angle);
@@ -312,6 +344,7 @@ mat4 rotate_axis(vec3 a, float angle)
 
 // transforms from world coordinates to camera coordinates
 
+inline
 mat4 lookat(vec3 pos, vec3 dir)
 {
     // camera basis vectors with respect to the world coordinate system
@@ -335,6 +368,7 @@ mat4 lookat(vec3 pos, vec3 dir)
 
 // angles are in degrees
 
+inline
 mat4 lookat(vec3 pos, float yaw, float pitch)
 {
     yaw = deg_to_rad(yaw);
@@ -343,6 +377,7 @@ mat4 lookat(vec3 pos, float yaw, float pitch)
     return mul(m, translate(-pos));
 }
 
+inline
 mat4 frustum(float l, float r, float b, float t, float n, float f)
 {
     mat4 m = {};
@@ -358,6 +393,7 @@ mat4 frustum(float l, float r, float b, float t, float n, float f)
 
 // fovy is in degrees
 
+inline
 mat4 perspective(float fovy, float aspect, float near, float far)
 {
     float top = tanf(deg_to_rad(fovy) / 2.f) * near;
@@ -365,6 +401,7 @@ mat4 perspective(float fovy, float aspect, float near, float far)
     return frustum(-right, right, -top, top, near, far);
 }
 
+inline
 mat4 orthographic(float l, float r, float b, float t, float n, float f)
 {
     mat4 m = {};
@@ -378,6 +415,7 @@ mat4 orthographic(float l, float r, float b, float t, float n, float f)
     return m;
 }
 
+inline
 mat3 inverse(mat3 m)
 {
     mat3 inv;
@@ -398,6 +436,7 @@ mat3 inverse(mat3 m)
     return inv;
 }
 
+inline
 vec4 quat_mul(vec4 q1, vec4 q2)
 {
     vec4 p;
@@ -408,6 +447,7 @@ vec4 quat_mul(vec4 q1, vec4 q2)
     return p;
 }
 
+inline
 vec4 quat_rot(vec3 axis, float angle)
 {
     float s = sinf(angle / 2);
@@ -419,6 +459,7 @@ vec4 quat_rot(vec3 axis, float angle)
     return q;
 }
 
+inline
 mat4 quat_to_mat4(vec4 q)
 {
     mat4 m = {};
