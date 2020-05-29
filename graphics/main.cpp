@@ -75,6 +75,7 @@ void main()
     vec3 spec_comp = specular_color * light_intensity * pow( max(dot(N, H), 0), specular_exp) * float(dot(N, L) > 0);
 
     out_color = ambient_comp + diff_comp + spec_comp;
+    out_color = pow(out_color, vec3(1/2.2));
 }
 )";
 
@@ -371,6 +372,9 @@ void _ras_frag_shader(RenderCmd& cmd, int idx, Varying varying)
     vec3 H = normalize(V + L);
     vec3 spec_comp = powf( max(dot(N, H), 0), cmd.specular_exp) * (dot(N, L) > 0) * mul_cwise(cmd.specular_color, cmd.light_intensity);
     vec3 color = ambient_comp + diff_comp + spec_comp;
+    color.x = powf(color.x, 1/2.2);
+    color.y = powf(color.y, 1/2.2);
+    color.z = powf(color.z, 1/2.2);
     color.x = min(color.x, 1.f);
     color.y = min(color.y, 1.f);
     color.z = min(color.z, 1.f);
@@ -663,7 +667,6 @@ int main()
 
     glEnable(GL_CULL_FACE);
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_FRAMEBUFFER_SRGB);
 
     GLuint program = glCreateProgram();
     {
@@ -686,14 +689,14 @@ int main()
     float yaw = 0;
 
     RenderCmd cmd;
-    cmd.light_intensity = {0.3, 0.3, 0.3};
+    cmd.light_intensity = {0.4, 0.4, 0.4};
     cmd.light_dir = normalize(vec3{1, 1, 1});
-    cmd.ambient_intensity = 0.1f;
+    cmd.ambient_intensity = 0.05;
     load(cmd.positions, cmd.normals, cmd.vertex_count);
     cmd.model_transform = identity4();
-    cmd.diffuse_color = {0.2, 0.2, 0.2};
+    cmd.diffuse_color = {0.15, 0.15, 0.15};
     cmd.specular_color = {1, 0, 0};
-    cmd.specular_exp = 50;
+    cmd.specular_exp = 60;
 
     while(!quit)
     {
