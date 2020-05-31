@@ -110,6 +110,12 @@ float length(vec3 v)
 }
 
 inline
+float length(vec4 v)
+{
+    return sqrtf(dot(v, v));
+}
+
+inline
 vec3 normalize(vec3 v)
 {
     float l = length(v);
@@ -117,7 +123,14 @@ vec3 normalize(vec3 v)
 }
 
 inline
-mat3 add(mat3 lhs, mat3 rhs)
+vec4 normalize(vec4 v)
+{
+    float l = length(v);
+    return {v.x / l, v.y / l, v.z / l, v.w / l};
+}
+
+inline
+mat3 operator+(mat3 lhs, mat3 rhs)
 {
     for(int i = 0; i < 9; ++i)
         lhs.data[i] += rhs.data[i];
@@ -125,7 +138,7 @@ mat3 add(mat3 lhs, mat3 rhs)
 }
 
 inline
-mat4 add(mat4 lhs, mat4 rhs)
+mat4 operator+(mat4 lhs, mat4 rhs)
 {
     for(int i = 0; i < 16; ++i)
         lhs.data[i] += rhs.data[i];
@@ -133,7 +146,7 @@ mat4 add(mat4 lhs, mat4 rhs)
 }
 
 inline
-vec3 mul(mat3 lhs, vec3 rhs)
+vec3 operator*(mat3 lhs, vec3 rhs)
 {
     vec3 product;
 
@@ -143,7 +156,7 @@ vec3 mul(mat3 lhs, vec3 rhs)
 }
 
 inline
-vec4 mul(mat4 lhs, vec4 rhs)
+vec4 operator*(mat4 lhs, vec4 rhs)
 {
     vec4 product;
 
@@ -153,12 +166,12 @@ vec4 mul(mat4 lhs, vec4 rhs)
 }
 
 inline
-mat3 mul(mat3 lhs, mat3 rhs)
+mat3 operator*(mat3 lhs, mat3 rhs)
 {
     for(int y = 0; y < 3; ++y)
     {
         vec3 column = {rhs.data[y], rhs.data[y + 3], rhs.data[y + 6]};
-        column = mul(lhs, column);
+        column = lhs * column;
         rhs.data[y] = column.x;
         rhs.data[y + 3] = column.y;
         rhs.data[y + 6] = column.z;
@@ -167,12 +180,12 @@ mat3 mul(mat3 lhs, mat3 rhs)
 }
 
 inline
-mat4 mul(mat4 lhs, mat4 rhs)
+mat4 operator*(mat4 lhs, mat4 rhs)
 {
     for(int y = 0; y < 4; ++y)
     {
         vec4 column = {rhs.data[y], rhs.data[y + 4], rhs.data[y + 8], rhs.data[y + 12]};
-        column = mul(lhs, column);
+        column = lhs * column;
         rhs.data[y] = column.x;
         rhs.data[y + 4] = column.y;
         rhs.data[y + 8] = column.z;
@@ -271,7 +284,7 @@ mat4 scale(vec3 v)
     mat4 m = {};
     m.data[0] = v.x;
     m.data[5] = v.y;
-    m.data[11] = v.z;
+    m.data[10] = v.z;
     m.data[15] = 1;
     return m;
 }
@@ -363,7 +376,7 @@ mat4 lookat(vec3 pos, vec3 dir)
     m.data[9] = z.y;
     m.data[10] = z.z;
     m.data[15] = 1;
-    return mul(m, translate(-pos)); // first translate then rotate
+    return m * translate(-pos); // first translate then rotate
 }
 
 // angles are in degrees
@@ -373,8 +386,7 @@ mat4 lookat(vec3 pos, float yaw, float pitch)
 {
     yaw = deg_to_rad(yaw);
     pitch = deg_to_rad(pitch);
-    mat4 m = mul(rotate_y(-yaw), rotate_x(-pitch));
-    return mul(m, translate(-pos));
+    return rotate_y(-yaw) * rotate_x(-pitch) * translate(-pos);
 }
 
 inline

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <float.h>
+#include <vector>
 #include "glad.h"
 #include "main.hpp"
 
@@ -238,7 +239,7 @@ void _ras_draw2(RenderCmd& cmd, vec4* coords, Varying* varyings);
 void ras_draw(RenderCmd& cmd)
 {
     // something like a fixed vertex shader
-    mat4 proj_view = mul(cmd.proj, cmd.view);
+    mat4 proj_view = cmd.proj * cmd.view;
     mat3 model3 = mat4_to_mat3(cmd.model_transform);
 
     for(int base = 0; base < cmd.vertex_count; base += 3)
@@ -250,10 +251,10 @@ void ras_draw(RenderCmd& cmd)
         {
             vec3 vert_pos = cmd.positions[base + i];
             coords[i] = {vert_pos.x, vert_pos.y, vert_pos.z, 1};
-            coords[i] = mul(cmd.model_transform, coords[i]);
+            coords[i] = cmd.model_transform * coords[i];
             varyings[i].pos = {coords[i].x, coords[i].y, coords[i].z};
-            coords[i] = mul(proj_view, coords[i]);
-            varyings[i].normal = mul(model3, cmd.normals[base + i]);
+            coords[i] = proj_view * coords[i];
+            varyings[i].normal = model3 * cmd.normals[base + i];
         }
         _ras_draw1(cmd, coords, varyings);
     }
@@ -397,7 +398,7 @@ void _ras_draw2(RenderCmd& cmd, vec4* coords, Varying* varyings)
         coords[i].y = coords[i].y / coords[i].w;
         coords[i].z = coords[i].z / coords[i].w;
 
-        // viewport transform
+        // viewport transformation
         coords[i].x = (_ras.width / 2.f) * (coords[i].x + 1.f);
         coords[i].y = (_ras.height / 2.f) * (coords[i].y + 1.f);
         coords[i].z = (1.f / 2.f) * (coords[i].z + 1.f);
@@ -497,7 +498,7 @@ void raytracer_draw(RenderCmd& cmd)
         _ras.triangles = (TracerTriangle*)malloc(sizeof(TracerTriangle) * tri_count);
     }
 
-    // preprocess vertex data
+    // preprocess vertex data; todo: coarse face culling, maybe other tests
     mat3 model3 = mat4_to_mat3(cmd.model_transform);
 
     for(int tid = 0; tid < tri_count; ++tid)
@@ -508,9 +509,9 @@ void raytracer_draw(RenderCmd& cmd)
         {
             vec3 p = cmd.positions[tid*3 + i];
             vec4 hp = {p.x, p.y, p.z, 1};
-            hp = mul(cmd.model_transform, hp);
+            hp = cmd.model_transform * hp;
             tri.vs[i].pos = {hp.x, hp.y, hp.z};
-            tri.vs[i].normal = mul(model3, cmd.normals[tid*3 + i]);
+            tri.vs[i].normal = model3 * cmd.normals[tid*3 + i];
         }
         tri.edge01 = tri.vs[1].pos - tri.vs[0].pos;
         tri.edge12 = tri.vs[2].pos - tri.vs[1].pos;
@@ -526,7 +527,7 @@ void raytracer_draw(RenderCmd& cmd)
     int width = _ras.width;
     int height = _ras.height;
     mat3 eye_basis = transpose(mat4_to_mat3(cmd.view)); // change of basis matrix
-    vec3 eye_pos = -1 * mul( eye_basis, vec3{cmd.view.data[3], cmd.view.data[7], cmd.view.data[11]} );
+    vec3 eye_pos = -1 * (eye_basis * vec3{cmd.view.data[3], cmd.view.data[7], cmd.view.data[11]});
     vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
 
     for(int idx = 0; idx < width * height; ++idx)
@@ -536,7 +537,7 @@ void raytracer_draw(RenderCmd& cmd)
         float x = ((right - left)/width) * (pix_x + 0.5f) + left;
         float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
         float z = -near;
-        vec3 ray_dir = normalize( mul(eye_basis, vec3{x, y, z}) );
+        vec3 ray_dir = normalize( eye_basis * vec3{x, y, z} );
 
         for(int tid = 0; tid < tri_count; ++tid)
         {
@@ -619,7 +620,62 @@ void gl_draw(RenderCmd& cmd, GLuint program)
     glDeleteVertexArrays(1, &vao);
 }
 
-void load(vec3*& out_positions, vec3*& out_normals, int& out_vertex_count);
+void load_model(const char* filename, vec3*& positions, vec3*& normals, int& vertex_count)
+{
+    FILE* file = fopen(filename, "r");
+    assert(file);
+    std::vector<vec3> tmp_positions;
+    std::vector<vec3> tmp_normals;
+
+    for(;;)
+    {
+        int code = fgetc(file);
+
+        if(code != 'v')
+        {
+            ungetc(code, file);
+            break;
+        }
+        code = fgetc(file);
+        vec3 v;
+        int n = fscanf(file, " %f %f %f ", &v.x, &v.y, &v.z);
+        assert(n == 3);
+
+        if(code == ' ')
+            tmp_positions.push_back(v);
+        else if(code == 'n')
+            tmp_normals.push_back(normalize(v));
+        else
+            assert(false);
+    }
+    assert(tmp_positions.size());
+    assert(tmp_normals.size());
+    std::vector<int> indices_n;
+    std::vector<int> indices_p;
+
+    while(fgetc(file) == 'f')
+    {
+        for(int i = 0; i < 3; ++i)
+        {
+            int pos_id, norm_id;
+            int n = fscanf(file, " %d//%d ", &pos_id, &norm_id);
+            assert(n == 2);
+            indices_p.push_back(pos_id - 1);
+            indices_n.push_back(norm_id - 1);
+        }
+    }
+    assert(indices_p.size() == indices_n.size());
+    vertex_count = indices_p.size();
+    assert(vertex_count % 3 == 0);
+    positions = (vec3*)malloc(sizeof(vec3) * vertex_count);
+    normals = (vec3*)malloc(sizeof(vec3) * vertex_count);
+
+    for(int i = 0; i < vertex_count; ++i)
+    {
+        positions[i] = tmp_positions[indices_p[i]];
+        normals[i] = tmp_normals[indices_n[i]];
+    }
+}
 
 RenderCmd test_triangle()
 {
@@ -653,7 +709,7 @@ int main()
         assert(false);
     }
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
-    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 800, 800, SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_OPENGL);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -684,19 +740,24 @@ int main()
     bool enable_move = false;
     int render_mode = 0;
     bool use_persp = true;
-    vec3 camera_pos = {0.f, 0.f, 1.f};
+    vec3 camera_pos = {0.f, 0.f, 2.f};
     float pitch = 0;
     float yaw = 0;
+    Uint64 prev_counter = SDL_GetPerformanceCounter();
+    vec4 rotation = quat_rot({0,1,0}, 0);
 
     RenderCmd cmd;
     cmd.light_intensity = {0.4, 0.4, 0.4};
-    cmd.light_dir = normalize(vec3{1, 1, 1});
-    cmd.ambient_intensity = 0.05;
-    load(cmd.positions, cmd.normals, cmd.vertex_count);
+    cmd.light_dir = normalize(vec3{1, 1, 0.5});
+    cmd.ambient_intensity = 0.01;
     cmd.model_transform = identity4();
     cmd.diffuse_color = {0.15, 0.15, 0.15};
     cmd.specular_color = {1, 0, 0};
     cmd.specular_exp = 60;
+
+    load_model("model.obj", cmd.positions, cmd.normals, cmd.vertex_count);
+
+    //cmd = test_triangle();
 
     while(!quit)
     {
@@ -720,7 +781,8 @@ int main()
                 case SDLK_1:
                     render_mode += 1;
 
-                    if(render_mode > 1) // todo: 2
+                    //if(render_mode > 2)
+                    if(render_mode > 1)
                         render_mode = 0;
 
                     printf("switched to %s\n", render_mode == 0 ? "OpenGL" : render_mode == 1 ? "software rasterizer" : "raytracer");
@@ -742,7 +804,7 @@ int main()
         }
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
-        mat4 persp = perspective(90, (float)width/height, 0.1f, 100.f);
+        mat4 persp = perspective(60, (float)width/height, 0.1f, 100.f);
         mat4 ortho;
         {
             float l, r, b, t, n, f;
@@ -752,6 +814,12 @@ int main()
         cmd.view = lookat(camera_pos, yaw, pitch);
         cmd.proj = use_persp ? persp : ortho;
         cmd.eye_pos = camera_pos;
+
+        Uint64 current_counter = SDL_GetPerformanceCounter();
+        float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
+        prev_counter = current_counter;
+        rotation = quat_mul(rotation, quat_rot({0,1,0}, 2*pi/10*dt));
+        cmd.model_transform = quat_to_mat4(rotation);
 
         switch(render_mode)
         {
