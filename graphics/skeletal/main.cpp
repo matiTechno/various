@@ -14,9 +14,12 @@ static const char* src_vert = R"(
 uniform mat4 view;
 uniform mat4 proj;
 uniform mat4 model;
+uniform mat4 skinning_matrices[128];
 
 layout(location = 0) in vec3 pos;
 layout(location = 1) in vec3 normal;
+layout(location = 2) in vec4 bone_id;
+layout(location = 3) in vec4 bone_weight;
 
 // in world space
 out vec3 frag_pos;
@@ -24,10 +27,18 @@ out vec3 frag_normal;
 
 void main()
 {
-    vec4 pos_w = model * vec4(pos, 1);
+    mat4 cp_from_bp = mat4(0);
+    cp_from_bp += skinning_matrices[int(bone_id.x)] * bone_weight.x;
+    cp_from_bp += skinning_matrices[int(bone_id.y)] * bone_weight.y;
+    cp_from_bp += skinning_matrices[int(bone_id.z)] * bone_weight.z;
+    cp_from_bp += skinning_matrices[int(bone_id.w)] * bone_weight.w;
+
+    mat4 model2 = model * cp_from_bp;
+
+    vec4 pos_w = model2 * vec4(pos, 1);
     gl_Position = proj * view * pos_w;
     frag_pos = vec3(pos_w);
-    frag_normal = mat3(model) * normal;
+    frag_normal = mat3(model2) * normal;
 }
 )";
 
@@ -164,8 +175,8 @@ void load_model(const char* filename, RenderCmd& cmd)
         {
             vec4 bone;
             vec4 weight;
-            int n = fscanf(file, " %f %f %f %f %f %f %f %f ", &bone.x, &bone.y, &bone.z, &bone.w,
-                &weight.x, &weight.y, &weight.z, &weight.w);
+            int n = fscanf(file, " %f %f %f %f %f %f %f %f ", &bone.x, &weight.x, &bone.y, &weight.y,
+                &bone.z, &weight.z, &bone.w, &weight.w);
             assert(n == 8);
             bone_ids.push_back(bone);
             weights.push_back(weight);
@@ -327,16 +338,33 @@ void gl_draw(RenderCmd& cmd)
     glGenVertexArrays(1, &vao);
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    size_t bytes = cmd.vertex_count * 2 * sizeof(vec3);
-    glBufferData(GL_ARRAY_BUFFER, bytes, nullptr, GL_STREAM_DRAW);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, bytes/2, cmd.positions);
-    glBufferSubData(GL_ARRAY_BUFFER, bytes/2, bytes/2, cmd.normals);
+    glBufferData(GL_ARRAY_BUFFER, cmd.vertex_count * (2*sizeof(vec3) + 2*sizeof(vec4)), nullptr, GL_STREAM_DRAW);
+
+    GLintptr offset = 0;
+    int bytes3 = sizeof(vec3) * cmd.vertex_count;
+    int bytes4 = sizeof(vec4) * cmd.vertex_count;
+
+    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes3, cmd.positions);
+    offset += bytes3;
+    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes3, cmd.normals);
+    offset += bytes3;
+    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes4, cmd.bone_ids);
+    offset += bytes4;
+    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes4, cmd.weights);
 
     glBindVertexArray(vao);
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void*)(bytes/2));
+    glEnableVertexAttribArray(2);
+    glEnableVertexAttribArray(3);
+    offset = 0;
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)offset);
+    offset += bytes3;
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void*)offset);
+    offset += bytes3;
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 0, (void*)offset);
+    offset += bytes4;
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 0, (void*)offset);
 
     GLuint program = cmd.debug ? _program_debug : _program;
     glUseProgram(program);
@@ -357,6 +385,7 @@ void gl_draw(RenderCmd& cmd)
         GLint diffuse_color_loc = glGetUniformLocation(program, "diffuse_color");
         GLint specular_color_loc = glGetUniformLocation(program, "specular_color");
         GLint specular_exp_loc = glGetUniformLocation(program, "specular_exp");
+        GLint skinning_matrices_loc = glGetUniformLocation(program, "skinning_matrices");
         glUniform3fv(light_int_loc, 1, &cmd.light_intensity.x);
         glUniform3fv(light_dir_loc, 1, &cmd.light_dir.x);
         glUniform1f(ambient_int_loc, cmd.ambient_intensity);
@@ -364,6 +393,7 @@ void gl_draw(RenderCmd& cmd)
         glUniform3fv(diffuse_color_loc, 1, &cmd.diffuse_color.x);
         glUniform3fv(specular_color_loc, 1, &cmd.specular_color.x);
         glUniform1f(specular_exp_loc, cmd.specular_exp);
+        glUniformMatrix4fv(skinning_matrices_loc, cmd.bone_count, GL_TRUE, cmd.skinning_matrices[0].data);
     }
 
     glDrawArrays(GL_TRIANGLES, 0, cmd.vertex_count);
@@ -403,7 +433,8 @@ int main()
     {
         assert(false);
     }
-    SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
+    SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_OPENGL);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -439,14 +470,14 @@ int main()
     }
     bool quit = false;
     bool enable_move = false;
-    vec3 camera_pos = {0.f, 2.f, 5.f};
+    vec3 camera_pos = {0.f, 0.f, 5.f};
     float pitch = 0;
     float yaw = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
     RenderCmd cmd;
     cmd.light_intensity = {0.4, 0.4, 0.4};
-    cmd.light_dir = normalize(vec3{1, 1, 0.5});
+    cmd.light_dir = normalize(vec3{0.5, 0.5, 1});
     cmd.ambient_intensity = 0.01;
     cmd.model_transform = identity4();
     cmd.diffuse_color = {0.15, 0.15, 0.15};
@@ -511,12 +542,13 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         gl_draw(cmd);
 
+        // debug view of bones
         for(int i = 0; i < cmd.bone_count; ++i)
         {
             RenderCmd cmd_bone = cmd_deb;
             mat4 cp_model_from_bone = cmd.skinning_matrices[i] * cmd.bp_model_from_bone[i];
             cmd_bone.model_transform = cmd.model_transform * cp_model_from_bone * cmd_bone.model_transform;
-            gl_draw(cmd_bone);
+            //gl_draw(cmd_bone);
         }
         SDL_GL_SwapWindow(window);
     }
