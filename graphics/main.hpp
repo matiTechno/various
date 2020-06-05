@@ -290,7 +290,6 @@ mat4 scale(vec3 v)
 }
 
 // angle is in radians
-
 inline
 mat4 rotate_x(float angle)
 {
@@ -355,8 +354,46 @@ mat4 rotate_axis(vec3 a, float angle)
     return m;
 }
 
-// transforms from world coordinates to camera coordinates
+// notes on changing coordinate systems
 
+// if we have basis vectors of system B expressed in system A and the origin of B (with respect to A) is equal to
+// the origin of A translated by a vector T, then:
+// [V]A = ( [B1, B2, B3] * [V]B ) + T
+// which can be written in a more compact way:
+// [V]A = M * [V]B
+// M = | B1x B2x B3x Tx |
+//     | B1y B2y B3y Ty |
+//     | B1z B2z B3z Tz |
+//     |   0   0   0  1 |
+// V is first rotated and then translated;
+// inverse of M transforms in the other direction, from A to B;
+// to calculate the inverse we don't need to use the expensive inverse() function because of the orthogonality
+// of the rotation part of M, see invert_coord_change()
+
+// e.g. transforms (model to view) matrix to (view to model)
+inline
+mat4 invert_coord_change(mat4 m)
+{
+    mat3 rot_trans = transpose(mat4_to_mat3(m));
+    vec3 tr = {m.data[3], m.data[7], m.data[11]};
+    vec3 tr2 = -1 * (rot_trans * tr);
+    mat4 m2 = {};
+
+    for(int i = 0; i < 3; ++i)
+    {
+        m2.data[i*4 + 0] = rot_trans.data[i*3 + 0];
+        m2.data[i*4 + 1] = rot_trans.data[i*3 + 1];
+        m2.data[i*4 + 2] = rot_trans.data[i*3 + 2];
+    }
+    m2.data[3] = tr2.x;
+    m2.data[7] = tr2.y;
+    m2.data[11] = tr2.z;
+    m2.data[15] = 1;
+    return m2;
+}
+
+// transforms from world coordinates to camera coordinates
+// note: this function could be implemented using invert_coord_change()
 inline
 mat4 lookat(vec3 pos, vec3 dir)
 {
@@ -380,7 +417,6 @@ mat4 lookat(vec3 pos, vec3 dir)
 }
 
 // angles are in degrees
-
 inline
 mat4 lookat(vec3 pos, float yaw, float pitch)
 {
@@ -404,7 +440,6 @@ mat4 frustum(float l, float r, float b, float t, float n, float f)
 }
 
 // fovy is in degrees
-
 inline
 mat4 perspective(float fovy, float aspect, float near, float far)
 {

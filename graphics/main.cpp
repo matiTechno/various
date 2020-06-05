@@ -530,6 +530,13 @@ void raytracer_draw(RenderCmd& cmd)
     vec3 eye_pos = -1 * (eye_basis * vec3{cmd.view.data[3], cmd.view.data[7], cmd.view.data[11]});
     vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
 
+    // or use invert_coord_change() instead
+    /*
+    mat4 world_from_view = invert_coord_change(cmd.view);
+    vec3 eye_basis = mat4_to_mat3(world_from_view);
+    vec3 eye_pos = {world_from_view.data[3], world_from_view.data[7], world_from_view.data[11]};
+    */
+
     for(int idx = 0; idx < width * height; ++idx)
     {
         int pix_x = idx % width;
