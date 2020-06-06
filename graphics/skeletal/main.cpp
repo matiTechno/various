@@ -116,12 +116,11 @@ struct RenderCmd
     // bone data
     int* parent_ids;
     mat4* bp_model_from_bone;
-    mat4* parent_from_bone;
     int bone_count;
 
     // animation data
     // [bone_id * sample_count][sample_id]
-    // these do not cause a coordinate system change (bone-relative, not parent-relative)
+    // these are parent-relative transformations (bone to parent space)
     vec3* translations;
     vec4* rotations;
     int sample_count;
@@ -144,7 +143,6 @@ void load_model(const char* filename, RenderCmd& cmd)
     std::vector<int> indices;
     std::vector<int> parent_ids;
     std::vector<mat4> bp_model_from_bone;
-    std::vector<mat4> parent_from_bone;
     std::vector<vec3> translations;
     std::vector<vec4> rotations;
     bool done = false;
@@ -196,24 +194,17 @@ void load_model(const char* filename, RenderCmd& cmd)
         case 'b':
         {
             int pid;
-            mat4 m1;
-            mat4 m2;
+            mat4 m;
             int n = fscanf(file, " %d ", &pid);
             assert(n == 1);
 
             for(int i = 0; i < 16; ++i)
             {
-                n = fscanf(file, " %f ", m1.data + i);
-                assert(n == 1);
-            }
-            for(int i = 0; i < 16; ++i)
-            {
-                n = fscanf(file, " %f ", m2.data + i);
+                n = fscanf(file, " %f ", m.data + i);
                 assert(n == 1);
             }
             parent_ids.push_back(pid);
-            bp_model_from_bone.push_back(m1);
-            parent_from_bone.push_back(m2);
+            bp_model_from_bone.push_back(m);
             break;
         }
         case 's':
@@ -254,13 +245,11 @@ void load_model(const char* filename, RenderCmd& cmd)
     cmd.bone_count = parent_ids.size();
     cmd.parent_ids = (int*)malloc(sizeof(int) * cmd.bone_count);
     cmd.bp_model_from_bone = (mat4*)malloc(sizeof(mat4) * cmd.bone_count);
-    cmd.parent_from_bone = (mat4*)malloc(sizeof(mat4) * cmd.bone_count);
 
     for(int i = 0; i < cmd.bone_count; ++i)
     {
         cmd.parent_ids[i] = parent_ids[i];
         cmd.bp_model_from_bone[i] = bp_model_from_bone[i];
-        cmd.parent_from_bone[i] = parent_from_bone[i];
     }
 
     cmd.sample_count = translations.size() / cmd.bone_count;
@@ -300,7 +289,7 @@ void update_skinning_matrices(RenderCmd& cmd, float dt)
         vec3 tr = (1-t)*tr_lhs + t*tr_rhs;
         vec4 rot = (1-t)*rot_lhs + t*rot_rhs;
         rot = normalize(rot);
-        mat4 parent_from_bone = cmd.parent_from_bone[i] * (translate(tr) * quat_to_mat4(rot));
+        mat4 parent_from_bone = translate(tr) * quat_to_mat4(rot);
         mat4 cp_model_from_parent = identity4();
 
         if(i > 0)
@@ -433,6 +422,8 @@ int main()
     {
         assert(false);
     }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
     //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_OPENGL);
     assert(window);
@@ -470,6 +461,7 @@ int main()
     }
     bool quit = false;
     bool enable_move = false;
+    bool draw_debug_bones = false;
     vec3 camera_pos = {0.f, 0.f, 5.f};
     float pitch = 0;
     float yaw = 0;
@@ -485,11 +477,11 @@ int main()
     cmd.specular_exp = 60;
     cmd.debug = false;
 
-    load_model("/home/mat/test.anim", cmd);
+    load_model("anim_export1", cmd);
     cmd.model_transform = gl_from_blender() * scale({0.1,0.1,0.1});
 
     RenderCmd cmd_deb = test_triangle();
-    cmd_deb.model_transform = rotate_y(pi/4) * scale({0.3,0.3,0.3});
+    cmd_deb.model_transform = rotate_y(pi/4) * scale({0.5,0.5,0.5});
 
     while(!quit)
     {
@@ -509,6 +501,9 @@ int main()
                 case SDLK_SPACE:
                     enable_move = !enable_move;
                     SDL_SetRelativeMouseMode(enable_move ? SDL_TRUE : SDL_FALSE);
+                    break;
+                case SDLK_1:
+                    draw_debug_bones = !draw_debug_bones;
                     break;
                 }
             }
@@ -542,13 +537,15 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         gl_draw(cmd);
 
-        // debug view of bones
-        for(int i = 0; i < cmd.bone_count; ++i)
+        if(draw_debug_bones)
         {
-            RenderCmd cmd_bone = cmd_deb;
-            mat4 cp_model_from_bone = cmd.skinning_matrices[i] * cmd.bp_model_from_bone[i];
-            cmd_bone.model_transform = cmd.model_transform * cp_model_from_bone * cmd_bone.model_transform;
-            //gl_draw(cmd_bone);
+            for(int i = 0; i < cmd.bone_count; ++i)
+            {
+                RenderCmd cmd_bone = cmd_deb;
+                mat4 cp_model_from_bone = cmd.skinning_matrices[i] * cmd.bp_model_from_bone[i];
+                cmd_bone.model_transform = cmd.model_transform * cp_model_from_bone * cmd_bone.model_transform;
+                gl_draw(cmd_bone);
+            }
         }
         SDL_GL_SwapWindow(window);
     }
