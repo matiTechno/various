@@ -5,7 +5,7 @@
 # mesh is expected to have triangular faces (polygons), each bone must have loc/rot channels and
 # each channel of each bone must have the same number of keyframe_points in the current action
 # bone scale transformations are not exported
-# probably all mesh modifiers except armature should be applied before running this script
+# probably all mesh transforms and modifiers (except armature) should be applied before running this script
 # keyframe_points are expected to be evenly spaced in a time domain
 # animation duration in seconds is not exported
 
