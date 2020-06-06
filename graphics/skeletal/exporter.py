@@ -8,6 +8,8 @@
 # probably all mesh transforms and modifiers (except armature) should be applied before running this script
 # keyframe_points are expected to be evenly spaced in a time domain
 # animation duration in seconds is not exported
+# todo: bones which don't affect skin are exported, this is not necessary
+# todo: bones with no animation are also exported
 
 import bpy
 import mathutils
@@ -20,10 +22,11 @@ def register_bone(bones, bone):
 object = bpy.context.selected_objects[0]
 assert object
 assert object.type == 'MESH'
-armature = bpy.data.armatures[object.find_armature().name]
-assert armature
+armature_object = object.find_armature()
+assert armature_object
+mesh = object.data
+armature = armature_object.data
 vertex_groups = object.vertex_groups
-mesh = bpy.data.meshes[object.name]
 bones = []
 assert armature.bones[0].parent == None # root bone
 register_bone(bones, armature.bones[0])
@@ -41,7 +44,7 @@ for group in vertex_groups:
     assert bone_id != None
     group_bone_id_map[group.index] = bone_id
 
-f = open('anim_export', 'w')
+f = open('anim_data', 'w')
 
 # positions
 
@@ -63,12 +66,13 @@ for vert in mesh.vertices:
     
     assert len(weights) > 0
     weights = sorted(weights, key=lambda tup: tup[1], reverse=True)
+    num_append = 4 - len(weights)
     
-    for i in range(4 - len(weights)):
+    for i in range(num_append):
         weights.append( (0,0) )
     
     if len(weights) > 4:
-        weights = weights[0:3]
+        weights = weights[0:4]
     
     mod = 0
     

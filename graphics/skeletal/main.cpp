@@ -462,7 +462,7 @@ int main()
     bool quit = false;
     bool enable_move = false;
     bool draw_debug_bones = false;
-    vec3 camera_pos = {0.f, 0.f, 5.f};
+    vec3 camera_pos = {0.f, 0.f, 2.f};
     float pitch = 0;
     float yaw = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
@@ -477,11 +477,11 @@ int main()
     cmd.specular_exp = 60;
     cmd.debug = false;
 
-    load_model("anim_export1", cmd);
-    cmd.model_transform = gl_from_blender() * scale({0.1,0.1,0.1});
+    load_model("anim_data", cmd);
+    cmd.model_transform = gl_from_blender();
 
     RenderCmd cmd_deb = test_triangle();
-    cmd_deb.model_transform = rotate_y(pi/4) * scale({0.5,0.5,0.5});
+    cmd_deb.model_transform = rotate_y(pi/4) * scale({0.02,0.02,0.02});
 
     while(!quit)
     {
