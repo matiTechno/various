@@ -286,9 +286,14 @@ void update_skinning_matrices(RenderCmd& cmd, float dt)
         vec3 tr_rhs = cmd.translations[base + sample_lhs_id + 1];
         vec4 rot_lhs = cmd.rotations[base + sample_lhs_id];
         vec4 rot_rhs = cmd.rotations[base + sample_lhs_id + 1];
+
+        // interpolate through the shorter path
+        if(dot(rot_lhs, rot_rhs) < 0)
+            rot_lhs = -1 * rot_lhs;
+
         vec3 tr = (1-t)*tr_lhs + t*tr_rhs;
         vec4 rot = (1-t)*rot_lhs + t*rot_rhs;
-        rot = normalize(rot);
+        rot = normalize(rot); // linear interpolation does not preserve length (quat_to_mat4() requires a unit quaternion)
         mat4 parent_from_bone = translate(tr) * quat_to_mat4(rot);
         mat4 cp_model_from_parent = identity4();
 
@@ -335,11 +340,15 @@ void gl_draw(RenderCmd& cmd)
 
     glBufferSubData(GL_ARRAY_BUFFER, offset, bytes3, cmd.positions);
     offset += bytes3;
-    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes3, cmd.normals);
-    offset += bytes3;
-    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes4, cmd.bone_ids);
-    offset += bytes4;
-    glBufferSubData(GL_ARRAY_BUFFER, offset, bytes4, cmd.weights);
+
+    if(!cmd.debug)
+    {
+        glBufferSubData(GL_ARRAY_BUFFER, offset, bytes3, cmd.normals);
+        offset += bytes3;
+        glBufferSubData(GL_ARRAY_BUFFER, offset, bytes4, cmd.bone_ids);
+        offset += bytes4;
+        glBufferSubData(GL_ARRAY_BUFFER, offset, bytes4, cmd.weights);
+    }
 
     glBindVertexArray(vao);
     glEnableVertexAttribArray(0);
@@ -394,17 +403,11 @@ void gl_draw(RenderCmd& cmd)
 RenderCmd test_triangle()
 {
     vec3* positions = (vec3*)malloc(3 * sizeof(vec3));
-    vec3* normals = (vec3*)malloc(3 * sizeof(vec3));
     positions[0] = {-1,-1,0};
     positions[1] = {1,-1,0};
     positions[2] = {0,1,0};
-    vec3 e01 = positions[1] - positions[0];
-    vec3 e02 = positions[2] - positions[0];
-    vec3 normal = normalize(cross(e01, e02));
-    normals[0] = normals[1] = normals[2] = normal;
     RenderCmd cmd;
     cmd.positions = positions;
-    cmd.normals = normals;
     cmd.vertex_count = 3;
     cmd.model_transform = identity4();
     cmd.debug = true;
@@ -424,8 +427,8 @@ int main()
     }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
-    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
+    SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 1000, 1000, SDL_WINDOW_OPENGL);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -462,26 +465,29 @@ int main()
     bool quit = false;
     bool enable_move = false;
     bool draw_debug_bones = false;
-    vec3 camera_pos = {0.f, 0.f, 2.f};
+    vec3 camera_pos = {0.f, 1.f, 2.f};
     float pitch = 0;
     float yaw = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
+    int active_id = 0;
+    RenderCmd cmd[2];
 
-    RenderCmd cmd;
-    cmd.light_intensity = {0.4, 0.4, 0.4};
-    cmd.light_dir = normalize(vec3{0.5, 0.5, 1});
-    cmd.ambient_intensity = 0.01;
-    cmd.model_transform = identity4();
-    cmd.diffuse_color = {0.15, 0.15, 0.15};
-    cmd.specular_color = {1, 0, 0};
-    cmd.specular_exp = 60;
-    cmd.debug = false;
+    cmd[0].light_intensity = {0.4, 0.4, 0.4};
+    cmd[0].light_dir = normalize(vec3{0, 0.5, 1});
+    cmd[0].ambient_intensity = 0.01;
+    cmd[0].model_transform = identity4();
+    cmd[0].diffuse_color = {0.6, 0.3, 0};
+    cmd[0].specular_color = {1, 0, 0};
+    cmd[0].specular_exp = 60;
+    cmd[0].debug = false;
+    cmd[0].model_transform = rotate_y(pi/4) * gl_from_blender();
 
-    load_model("anim_data", cmd);
-    cmd.model_transform = gl_from_blender();
+    cmd[1] = cmd[0];
+    load_model("anim_data_human", cmd[0]);
+    load_model("anim_data_snake", cmd[1]);
 
     RenderCmd cmd_deb = test_triangle();
-    cmd_deb.model_transform = rotate_y(pi/4) * scale({0.02,0.02,0.02});
+    cmd_deb.model_transform = scale({0.02,0.02,0.02});
 
     while(!quit)
     {
@@ -505,6 +511,12 @@ int main()
                 case SDLK_1:
                     draw_debug_bones = !draw_debug_bones;
                     break;
+                case SDLK_2:
+                    int count = sizeof(cmd) / sizeof(RenderCmd);
+                    active_id += 1;
+
+                    if(active_id == count)
+                        active_id = 0;
                 }
             }
             else if(event.type == SDL_MOUSEMOTION && enable_move)
@@ -523,27 +535,29 @@ int main()
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
         prev_counter = current_counter;
 
-        update_skinning_matrices(cmd, dt);
+        RenderCmd& cmd_active = cmd[active_id];
 
-        cmd.view = lookat(camera_pos, yaw, pitch);
-        cmd.proj = perspective(60, (float)width/height, 0.1f, 100.f);
-        cmd.eye_pos = camera_pos;
+        update_skinning_matrices(cmd_active, dt);
 
-        cmd_deb.view = cmd.view;
-        cmd_deb.proj = cmd.proj;
-        cmd_deb.eye_pos = cmd.eye_pos;
+        cmd_active.view = lookat(camera_pos, yaw, pitch);
+        cmd_active.proj = perspective(60, (float)width/height, 0.1f, 100.f);
+        cmd_active.eye_pos = camera_pos;
+
+        cmd_deb.view = cmd_active.view;
+        cmd_deb.proj = cmd_active.proj;
+        cmd_deb.eye_pos = cmd_active.eye_pos;
 
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        gl_draw(cmd);
+        gl_draw(cmd_active);
 
         if(draw_debug_bones)
         {
-            for(int i = 0; i < cmd.bone_count; ++i)
+            for(int i = 0; i < cmd_active.bone_count; ++i)
             {
                 RenderCmd cmd_bone = cmd_deb;
-                mat4 cp_model_from_bone = cmd.skinning_matrices[i] * cmd.bp_model_from_bone[i];
-                cmd_bone.model_transform = cmd.model_transform * cp_model_from_bone * cmd_bone.model_transform;
+                mat4 cp_model_from_bone = cmd_active.skinning_matrices[i] * cmd_active.bp_model_from_bone[i];
+                cmd_bone.model_transform = cmd_active.model_transform * cp_model_from_bone * cmd_bone.model_transform;
                 gl_draw(cmd_bone);
             }
         }
