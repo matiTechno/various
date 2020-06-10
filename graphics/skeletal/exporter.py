@@ -29,7 +29,10 @@ armature = armature_object.data
 vertex_groups = object.vertex_groups
 bones = []
 assert armature.bones[0].parent == None # root bone
-register_bone(bones, armature.bones[0])
+
+for bone in armature.bones:
+    register_bone(bones, bone)
+
 action = object.animation_data.action
 assert action
 group_bone_id_map = {}

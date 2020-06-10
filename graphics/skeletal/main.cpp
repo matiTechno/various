@@ -470,7 +470,7 @@ int main()
     float yaw = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
     int active_id = 0;
-    RenderCmd cmd[2];
+    RenderCmd cmd[3];
 
     cmd[0].light_intensity = {0.4, 0.4, 0.4};
     cmd[0].light_dir = normalize(vec3{0, 0.5, 1});
@@ -483,8 +483,10 @@ int main()
     cmd[0].model_transform = rotate_y(pi/4) * gl_from_blender();
 
     cmd[1] = cmd[0];
+	cmd[2] = cmd[0];
     load_model("anim_data_human", cmd[0]);
-    load_model("anim_data_snake", cmd[1]);
+    load_model("anim_data_squat", cmd[1]);
+    load_model("anim_data_snake", cmd[2]);
 
     RenderCmd cmd_deb = test_triangle();
     cmd_deb.model_transform = scale({0.02,0.02,0.02});
