@@ -3,11 +3,28 @@
 #define pi (3.14159265359f)
 typedef unsigned char u8;
 
+inline
+float max(float lhs, float rhs)
+{
+    return lhs > rhs ? lhs : rhs;
+}
+
+inline
+float min(float lhs, float rhs)
+{
+    return lhs < rhs ? lhs : rhs;
+}
+
 struct vec3
 {
     float x;
     float y;
     float z;
+
+    float& operator[](int idx)
+    {
+        return (&x)[idx];
+    }
 };
 
 inline
@@ -46,6 +63,11 @@ struct vec4
     float y;
     float z;
     float w;
+
+    float& operator[](int idx)
+    {
+        return (&x)[idx];
+    }
 };
 
 inline

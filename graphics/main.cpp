@@ -24,6 +24,7 @@ struct RenderCmd
     vec3 diffuse_color;
     vec3 specular_color;
     float specular_exp;
+    bool debug;
 };
 
 static const char* src_vert = R"(
@@ -59,6 +60,7 @@ uniform vec3 diffuse_color;
 uniform vec3 specular_color;
 uniform float specular_exp;
 uniform vec3 eye_pos;
+uniform int debug;
 
 in vec3 frag_pos;
 in vec3 frag_normal;
@@ -66,6 +68,11 @@ out vec3 out_color;
 
 void main()
 {
+    if(bool(debug))
+    {
+        out_color = vec3(1,1,1);
+        return;
+    }
     vec3 L = light_dir;
     vec3 N = normalize(frag_normal);
     vec3 ambient_comp = diffuse_color * ambient_intensity;
@@ -138,15 +145,182 @@ Varying operator*(float scalar, Varying v)
     return v;
 }
 
-struct TracerTriangle
+#define BVH_MAX_DEPTH 7
+
+struct BV_node
 {
-    Varying vs[3];
-    vec3 edge01;
-    vec3 edge12;
-    vec3 edge20;
-    vec3 normal;
-    float area;
+    union
+    {
+        struct
+        {
+            vec3* positions;
+            vec3* normals;
+            int vert_count;
+        };
+        struct
+        {
+            BV_node* children[8];
+            int child_count;
+        };
+    };
+
+    vec3 bbox_min;
+    vec3 bbox_max;
+    bool leaf;
 };
+
+void compute_bbox(vec3* positions, int vert_count, vec3& bbox_min, vec3& bbox_max)
+{
+    assert(vert_count);
+    bbox_min = positions[0];
+    bbox_max = positions[0];
+
+    for(int i = 1; i < vert_count; ++i)
+    {
+        vec3 pos = positions[i];
+
+        for(int c = 0; c < 3; ++c)
+        {
+            bbox_min[c] = min(bbox_min[c], pos[c]);
+            bbox_max[c] = max(bbox_max[c], pos[c]);
+        }
+    }
+}
+
+BV_node* get_child_for_insert(BV_node* node, vec3* positions)
+{
+    vec3 center = (1.f/3) * (positions[0] + positions[1] + positions[2]);
+    vec3 bbox_mid = 0.5 * (node->bbox_min + node->bbox_max);
+    vec3 bbox_min = node->bbox_min;
+    vec3 bbox_max = bbox_mid;
+    int idx = 0;
+    int weight = 4;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        if(center[i] > bbox_mid[i])
+        {
+            bbox_min[i] = bbox_mid[i];
+            bbox_max[i] = node->bbox_max[i];
+            idx += weight;
+        }
+        weight /= 2;
+    }
+
+    BV_node*& child = node->children[idx];
+
+    if(child == nullptr)
+    {
+        child = (BV_node*)malloc(sizeof(BV_node));
+        memset(child, 0, sizeof(BV_node));
+        child->bbox_min = bbox_min;
+        child->bbox_max = bbox_max;
+        child->leaf = true;
+        node->child_count += 1;
+    }
+    return child;
+}
+
+void insert_triangle(BV_node* node, int depth, vec3* positions, vec3* normals)
+{
+    // convert to an internal node
+
+    if(depth != BVH_MAX_DEPTH && node->leaf && node->vert_count)
+    {
+        vec3* tmp_pos = node->positions;
+        vec3* tmp_norm = node->normals;
+        node->leaf = false;
+        memset(node->children, 0, sizeof node->children);
+        node->child_count = 0;
+        BV_node* child = get_child_for_insert(node, positions);
+        insert_triangle(child, depth + 1, tmp_pos, tmp_norm);
+        free(tmp_pos);
+        free(tmp_norm);
+    }
+
+    if(node->leaf)
+    {
+        int base = node->vert_count;
+        node->vert_count += 3;
+        node->positions = (vec3*)realloc(node->positions, sizeof(vec3) * node->vert_count);
+        node->normals = (vec3*)realloc(node->normals, sizeof(vec3) * node->vert_count);
+
+        for(int i = 0; i < 3; ++i)
+        {
+            node->positions[base+i] = positions[i];
+            node->normals[base+i] = normals[i];
+        }
+    }
+    else
+    {
+        BV_node* child = get_child_for_insert(node, positions);
+        insert_triangle(child, depth + 1, positions, normals);
+    }
+}
+
+void optimize_BVH(BV_node* node)
+{
+    if(node->leaf)
+    {
+        assert(node->vert_count);
+        compute_bbox(node->positions, node->vert_count, node->bbox_min, node->bbox_max);
+        return;
+    }
+
+    BV_node* sorted[8] = {}; // = {} is only for an easier debugging
+    int sorted_count = 0;
+
+    for(int i = 0; i < 8; ++i)
+    {
+        if(node->children[i])
+        {
+            sorted[sorted_count] = node->children[i];
+            sorted_count += 1;
+        }
+    }
+    memcpy(node->children, sorted, sizeof sorted);
+
+    for(int i = 0; i < node->child_count; ++i)
+        optimize_BVH(node->children[i]);
+
+    // if a node has only one child replace it with the child and return
+
+    if(node->child_count == 1)
+    {
+        BV_node* child = node->children[0];
+        *node = *child;
+        free(child);
+        return;
+    }
+
+    node->bbox_min = node->children[0]->bbox_min;
+    node->bbox_max = node->children[0]->bbox_max;
+
+    for(int i = 1; i < node->child_count; ++i)
+    {
+        BV_node* child = node->children[i];
+
+        for(int c = 0; c < 3; ++c)
+        {
+            node->bbox_min[c] = min(node->bbox_min[c], child->bbox_min[c]);
+            node->bbox_max[c] = max(node->bbox_max[c], child->bbox_max[c]);
+        }
+    }
+}
+
+BV_node* build_BVH(vec3* positions, vec3* normals, int vert_count)
+{
+    BV_node* root = (BV_node*)malloc(sizeof(BV_node));
+    memset(root, 0, sizeof(BV_node));
+    compute_bbox(positions, vert_count, root->bbox_min, root->bbox_max);
+    root->leaf = true;
+
+    for(int base = 0; base < vert_count; base += 3)
+        insert_triangle(root, 0, positions + base, normals + base);
+
+    optimize_BVH(root);
+    return root;
+}
 
 // software rasterizer / raytracer global state
 struct
@@ -155,8 +329,6 @@ struct
     int height;
     float* depth_buf;
     u8* color_buf;
-    TracerTriangle* triangles;
-    int triangles_size;
     // opengl resources for ras_display()
     GLuint vbo;
     GLuint vao;
@@ -170,8 +342,6 @@ void ras_init()
     _ras.color_buf = nullptr;
     _ras.width = 0;
     _ras.height = 0;
-    _ras.triangles = nullptr;
-    _ras.triangles_size = 0;
 
     float verts[] = {-1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, 1};
 
@@ -353,16 +523,6 @@ void _ras_draw1(RenderCmd& cmd, vec4* coords, Varying* varyings)
         _ras_draw2(cmd, coords, varyings);
 }
 
-float max(float lhs, float rhs)
-{
-    return lhs > rhs ? lhs : rhs;
-}
-
-float min(float lhs, float rhs)
-{
-    return lhs < rhs ? lhs : rhs;
-}
-
 void _ras_frag_shader(RenderCmd& cmd, int idx, Varying varying)
 {
     vec3 L = cmd.light_dir;
@@ -489,39 +649,7 @@ void raytracer_draw(RenderCmd& cmd)
     if(!cmd.proj.data[14])
         return;
 
-    int tri_count = cmd.vertex_count / 3;
-
-    if(tri_count > _ras.triangles_size)
-    {
-        free(_ras.triangles);
-        _ras.triangles_size = tri_count;
-        _ras.triangles = (TracerTriangle*)malloc(sizeof(TracerTriangle) * tri_count);
-    }
-
-    // preprocess vertex data; todo: coarse face culling, maybe other tests
     mat3 model3 = mat4_to_mat3(cmd.model_transform);
-
-    for(int tid = 0; tid < tri_count; ++tid)
-    {
-        TracerTriangle tri;
-
-        for(int i = 0; i < 3; ++i)
-        {
-            vec3 p = cmd.positions[tid*3 + i];
-            vec4 hp = {p.x, p.y, p.z, 1};
-            hp = cmd.model_transform * hp;
-            tri.vs[i].pos = {hp.x, hp.y, hp.z};
-            tri.vs[i].normal = model3 * cmd.normals[tid*3 + i];
-        }
-        tri.edge01 = tri.vs[1].pos - tri.vs[0].pos;
-        tri.edge12 = tri.vs[2].pos - tri.vs[1].pos;
-        tri.edge20 = tri.vs[0].pos - tri.vs[2].pos;
-        tri.normal = cross(tri.edge01, tri.edge12);
-        tri.area = length(tri.normal);
-        tri.normal = (1 / tri.area) * tri.normal; // normalize
-        _ras.triangles[tid] = tri;
-    }
-
     float left, right, bot, top, near, far;
     extract_frustum(cmd.proj, left, right, bot, top, near, far);
     int width = _ras.width;
@@ -546,16 +674,30 @@ void raytracer_draw(RenderCmd& cmd)
         float z = -near;
         vec3 ray_dir = normalize( eye_basis * vec3{x, y, z} );
 
-        for(int tid = 0; tid < tri_count; ++tid)
+        for(int base = 0; base < cmd.vertex_count; base += 3)
         {
-            TracerTriangle tri = _ras.triangles[tid];
-            vec3 normal = tri.normal;
+            Varying vs[3];
+
+            for(int i = 0; i < 3; ++i)
+            {
+                vec3 p = cmd.positions[base + i];
+                vec4 hp = {p.x, p.y, p.z, 1};
+                hp = cmd.model_transform * hp;
+                vs[i].pos = {hp.x, hp.y, hp.z};
+                vs[i].normal = model3 * cmd.normals[base + i];
+            }
+            vec3 edge01 = vs[1].pos - vs[0].pos;
+            vec3 edge12 = vs[2].pos - vs[1].pos;
+            vec3 edge20 = vs[0].pos - vs[2].pos;
+            vec3 normal = cross(edge01, edge12);
+            float area = length(normal);
+            normal = (1 / area) * normal; // normalize
 
             // face culling
             if(dot(normal, -ray_dir) < 0.f)
                 continue;
 
-            float t = (dot(tri.normal, tri.vs[0].pos) - dot(normal, eye_pos)) / dot(normal, ray_dir);
+            float t = (dot(normal, vs[0].pos) - dot(normal, eye_pos)) / dot(normal, ray_dir);
 
             // depth test
             if(t > _ras.depth_buf[idx])
@@ -568,15 +710,15 @@ void raytracer_draw(RenderCmd& cmd)
                 continue;
 
             vec3 p = eye_pos + t*ray_dir;
-            float b0 = dot(normal, cross(tri.edge12, p - tri.vs[1].pos)) / tri.area;
-            float b1 = dot(normal, cross(tri.edge20, p - tri.vs[2].pos)) / tri.area;
-            float b2 = dot(normal, cross(tri.edge01, p - tri.vs[0].pos)) / tri.area;
+            float b0 = dot(normal, cross(edge12, p - vs[1].pos)) / area;
+            float b1 = dot(normal, cross(edge20, p - vs[2].pos)) / area;
+            float b2 = dot(normal, cross(edge01, p - vs[0].pos)) / area;
 
             // point on a plane is not in a triangle
             if(b0 < 0 || b1 < 0 || b2 < 0)
                 continue;
             _ras.depth_buf[idx] = t;
-            _ras_frag_shader(cmd, idx, (b0 * tri.vs[0]) + (b1 * tri.vs[1]) + (b2 * tri.vs[2]) );
+            _ras_frag_shader(cmd, idx, (b0 * vs[0]) + (b1 * vs[1]) + (b2 * vs[2]) );
         }
     }
 }
@@ -592,13 +734,19 @@ void gl_draw(RenderCmd& cmd, GLuint program)
     size_t bytes = cmd.vertex_count * 2 * sizeof(vec3);
     glBufferData(GL_ARRAY_BUFFER, bytes, nullptr, GL_STREAM_DRAW);
     glBufferSubData(GL_ARRAY_BUFFER, 0, bytes/2, cmd.positions);
-    glBufferSubData(GL_ARRAY_BUFFER, bytes/2, bytes/2, cmd.normals);
+
+    if(!cmd.debug)
+        glBufferSubData(GL_ARRAY_BUFFER, bytes/2, bytes/2, cmd.normals);
 
     glBindVertexArray(vao);
     glEnableVertexAttribArray(0);
-    glEnableVertexAttribArray(1);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void*)(bytes/2));
+
+    if(!cmd.debug)
+    {
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, (void*)(bytes/2));
+    }
 
     glUseProgram(program);
     GLint view_loc = glGetUniformLocation(program, "view");
@@ -617,11 +765,26 @@ void gl_draw(RenderCmd& cmd, GLuint program)
     GLint diffuse_color_loc = glGetUniformLocation(program, "diffuse_color");
     GLint specular_color_loc = glGetUniformLocation(program, "specular_color");
     GLint specular_exp_loc = glGetUniformLocation(program, "specular_exp");
+    GLint debug_loc = glGetUniformLocation(program, "debug");
     glUniformMatrix4fv(model_loc, 1, GL_TRUE, cmd.model_transform.data);
     glUniform3fv(diffuse_color_loc, 1, &cmd.diffuse_color.x);
     glUniform3fv(specular_color_loc, 1, &cmd.specular_color.x);
     glUniform1f(specular_exp_loc, cmd.specular_exp);
-    glDrawArrays(GL_TRIANGLES, 0, cmd.vertex_count);
+    glUniform1i(debug_loc, cmd.debug);
+
+    if(cmd.debug)
+    {
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glDrawArrays(GL_LINES, 0, cmd.vertex_count);
+    }
+    else
+    {
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+        glDrawArrays(GL_TRIANGLES, 0, cmd.vertex_count);
+    }
+
     // note: this is super important
     glDeleteBuffers(1, &vbo);
     glDeleteVertexArrays(1, &vao);
@@ -706,7 +869,47 @@ RenderCmd test_triangle()
     cmd.diffuse_color = {0.5, 0.5, 0.5};
     cmd.specular_color = {0, 1, 0};
     cmd.specular_exp = 20.f;
+    cmd.debug = false;
     return cmd;
+}
+
+void build_BHV_viz(BV_node* node, int current_depth, int target_depth, std::vector<vec3>& segments)
+{
+    if(!node->leaf && current_depth != target_depth)
+    {
+        for(int i = 0; i < node->child_count; ++i)
+            build_BHV_viz(node->children[i], current_depth + 1, target_depth, segments);
+        return;
+    }
+    vec3 bmin = node->bbox_min;
+    vec3 bmax = node->bbox_max;
+
+    vec3 v[8];
+    // lower y face vertices, counter-clockwise
+    v[0] = bmin;
+    v[1] = {bmax.x, bmin.y, bmin.z};
+    v[2] = {bmax.x, bmin.y, bmax.z};
+    v[3] = {bmin.x, bmin.y, bmax.z};
+    // higher y face surface
+    for(int i = 4; i < 8; ++i)
+    {
+        v[i] = v[i - 4];
+        v[i].y = bmax.y;
+    }
+    // 12 edges
+    for(int i = 0; i < 4; ++i)
+    {
+        int i2 = (i+1)%4;
+        // lower y face edge
+        segments.push_back(v[i]);
+        segments.push_back(v[i2]);
+        // higher y face edge
+        segments.push_back(v[i+4]);
+        segments.push_back(v[i2+4]);
+        // side face edge
+        segments.push_back(v[i]);
+        segments.push_back(v[i+4]);
+    }
 }
 
 int main()
@@ -730,9 +933,6 @@ int main()
 
     ras_init();
 
-    glEnable(GL_CULL_FACE);
-    glEnable(GL_DEPTH_TEST);
-
     GLuint program = glCreateProgram();
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
@@ -746,6 +946,7 @@ int main()
         glLinkProgram(program);
     }
     bool quit = false;
+    int debug_bvh_level = 0;
     bool enable_move = false;
     int render_mode = 0;
     bool use_persp = true;
@@ -763,10 +964,12 @@ int main()
     cmd.diffuse_color = {0.15, 0.15, 0.15};
     cmd.specular_color = {1, 0, 0};
     cmd.specular_exp = 60;
+    cmd.debug = false;
 
-    load_model("model.obj", cmd.positions, cmd.normals, cmd.vertex_count);
-
-    //cmd = test_triangle();
+    //load_model("model.obj", cmd.positions, cmd.normals, cmd.vertex_count);
+    cmd = test_triangle();
+    BV_node* bvh_root = build_BVH(cmd.positions, cmd.normals, cmd.vertex_count);
+    std::vector<vec3> segments;
 
     while(!quit)
     {
@@ -790,8 +993,8 @@ int main()
                 case SDLK_1:
                     render_mode += 1;
 
-                    //if(render_mode > 2)
-                    if(render_mode > 1)
+                    if(render_mode > 2)
+                    //if(render_mode > 1)
                         render_mode = 0;
 
                     printf("switched to %s\n", render_mode == 0 ? "OpenGL" : render_mode == 1 ? "software rasterizer" : "raytracer");
@@ -799,6 +1002,18 @@ int main()
                 case SDLK_2:
                     use_persp = !use_persp;
                     printf("switched to %s projection\n", use_persp ? "perspective" : "orthographic");
+                    break;
+                case SDLK_d:
+                    debug_bvh_level += 1;
+
+                    if(debug_bvh_level > BVH_MAX_DEPTH)
+                        debug_bvh_level = 0;
+
+                    segments.clear();
+
+                    if(debug_bvh_level == 0) // don't display anything at level 0
+                        break;
+                    build_BHV_viz(bvh_root, 0, debug_bvh_level, segments);
                     break;
                 }
             }
@@ -828,7 +1043,7 @@ int main()
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
         prev_counter = current_counter;
         rotation = quat_mul(rotation, quat_rot({0,1,0}, 2*pi/10*dt));
-        cmd.model_transform = quat_to_mat4(rotation);
+        //cmd.model_transform = quat_to_mat4(rotation);
 
         switch(render_mode)
         {
@@ -854,6 +1069,14 @@ int main()
         default:
             assert(false);
         }
+
+        // bvh debug view
+        RenderCmd cmd_tmp = cmd;
+        cmd_tmp.positions = segments.data();
+        cmd_tmp.vertex_count = segments.size();
+        cmd_tmp.debug = true;
+        gl_draw(cmd_tmp, program);
+
         SDL_GL_SwapWindow(window);
     }
     SDL_Quit();

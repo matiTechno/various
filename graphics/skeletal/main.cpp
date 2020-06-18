@@ -403,8 +403,8 @@ void gl_draw(RenderCmd& cmd)
 RenderCmd test_triangle()
 {
     vec3* positions = (vec3*)malloc(3 * sizeof(vec3));
-    positions[0] = {-1,-1,0};
-    positions[1] = {1,-1,0};
+    positions[0] = {-0.3,0,0};
+    positions[1] = {0.3,0,0};
     positions[2] = {0,1,0};
     RenderCmd cmd;
     cmd.positions = positions;
@@ -489,7 +489,7 @@ int main()
     load_model("anim_data_snake", cmd[2]);
 
     RenderCmd cmd_deb = test_triangle();
-    cmd_deb.model_transform = scale({0.02,0.02,0.02});
+    cmd_deb.model_transform = scale({0.05,0.05,0.05});
 
     while(!quit)
     {
