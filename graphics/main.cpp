@@ -1010,6 +1010,19 @@ void build_BHV_viz(BV_node* node, int current_depth, int target_depth, std::vect
     }
 }
 
+void count_BVH_nodes(BV_node* node, int& internal, int& leaf)
+{
+    if(node->leaf)
+        leaf += 1;
+    else
+    {
+        internal += 1;
+
+        for(int i = 0; i < node->child_count; ++i)
+            count_BVH_nodes(node->children[i], internal, leaf);
+    }
+}
+
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -1052,7 +1065,7 @@ int main()
     vec3 camera_pos = {0.f, 0.f, 2.f};
     float pitch = 0;
     float yaw = 0;
-    Uint64 prev_counter = SDL_GetPerformanceCounter();
+    Uint64 prev_counter = SDL_GetPerformanceCounter(); // on linux this is clock_gettime(CLOCK_MONOTONIC)
     vec4 rotation = quat_rot({0,1,0}, 0);
 
     RenderCmd cmd;
@@ -1067,7 +1080,21 @@ int main()
 
     load_model("model.obj", cmd.positions, cmd.normals, cmd.vertex_count);
     //cmd = test_triangle();
-    BV_node* bvh_root = build_BVH(cmd.positions, cmd.normals, cmd.vertex_count);
+    printf("vertex count: %d (%d triangles)\n", cmd.vertex_count, cmd.vertex_count/3);
+
+    BV_node* bvh_root;
+    {
+        Uint64 c1 = SDL_GetPerformanceCounter();
+        bvh_root = build_BVH(cmd.positions, cmd.normals, cmd.vertex_count);
+        Uint64 c2 = SDL_GetPerformanceCounter();
+        double dt = (c2 - c1) / (double)SDL_GetPerformanceFrequency();
+        printf("BVH build time: %f\n", dt);
+        int internal = 0;
+        int leaf = 0;
+        count_BVH_nodes(bvh_root, internal, leaf);
+        printf("BVH internal nodes: %d\n", internal);
+        printf("BVH leaf     nodes: %d\n", leaf);
+    }
     std::vector<vec3> segments;
 
     while(!quit)
@@ -1163,11 +1190,17 @@ int main()
             ras_display();
             break;
         case 2:
+        {
             ras_viewport(width, height);
             ras_clear_buffers();
+            Uint64 c1 = SDL_GetPerformanceCounter();
             raytracer_draw(cmd, bvh_root);
+            Uint64 c2 = SDL_GetPerformanceCounter();
+            double dt = (c2 - c1) / (double)SDL_GetPerformanceFrequency();
+            printf("raytracer render time: %f\n", dt);
             ras_display();
             break;
+        }
         default:
             assert(false);
         }
