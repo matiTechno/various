@@ -642,7 +642,48 @@ void extract_frustum(mat4 persp, float& l, float& r, float& b, float& t, float& 
     t = n*(persp.data[6] + 1) / persp.data[5];
 }
 
-void raytracer_draw(RenderCmd& cmd)
+// returns FLT_MAX on a miss
+
+float ray_AABB_test(vec3 ray_start, vec3 ray_dir, vec3 box_min, vec3 box_max)
+{
+    float closest_t = FLT_MAX;
+
+    vec3 plane_pos;
+    plane_pos.x = ray_dir.x > 0 ? box_min.x : box_max.x;
+    plane_pos.y = ray_dir.y > 0 ? box_min.y : box_max.y;
+    plane_pos.z = ray_dir.z > 0 ? box_min.z : box_max.z;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        float t = (plane_pos[i] - ray_start[i]) / ray_dir[i];
+
+        if(t < 0 || t > closest_t)
+            continue;
+
+        vec3 p = ray_start + t * ray_dir;
+        int fail = 0;
+
+        for(int k = 0; k < 3 && !fail; ++k)
+        {
+            if(k == i)
+                continue;
+            fail |= p[k] < box_min[k];
+            fail |= p[k] > box_max[k];
+        }
+
+        if(!fail)
+            closest_t = t;
+    }
+    return closest_t;
+}
+
+struct Intersection
+{
+    BV_node* node;
+    float t;
+};
+
+void raytracer_draw(RenderCmd& cmd, BV_node* bvh_root)
 {
     // exit if projection is orthographic
     // todo
@@ -661,8 +702,12 @@ void raytracer_draw(RenderCmd& cmd)
     vec3 eye_pos = {model_from_view.data[3], model_from_view.data[7], model_from_view.data[11]};
     vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
 
+    // note: bounding volumes are allowed to overlap
+    std::vector<Intersection> queue; // sorted in a descending order of t
+
     for(int idx = 0; idx < width * height; ++idx)
     {
+        queue.clear();
         vec3 ray_dir;
         {
             int pix_x = idx % width;
@@ -671,57 +716,108 @@ void raytracer_draw(RenderCmd& cmd)
             float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
             float z = -near;
             ray_dir = normalize( eye_basis * vec3{x, y, z} );
+
+            float t = ray_AABB_test(eye_pos, ray_dir, bvh_root->bbox_min, bvh_root->bbox_max);
+
+            if(t != FLT_MAX)
+                queue.push_back({bvh_root, t});
         }
 
-        for(int base = 0; base < cmd.vertex_count; base += 3)
+        // closest intersected fragment
+        bool frag_valid = false; // if passed all the tests
+        float frag_t = _ras.depth_buf[idx]; // t parameter of the intersection
+        vec3 frag_pos;
+        vec3 frag_normal;
+
+        while(queue.size())
         {
-            vec3* coords = cmd.positions + base;
+            if(queue.back().t > frag_t)
+                break;
 
-            vec3 edge01 = coords[1] - coords[0];
-            vec3 edge12 = coords[2] - coords[1];
-            vec3 edge20 = coords[0] - coords[2];
-            vec3 normal = cross(edge01, edge12);
-            float area = length(normal);
-            normal = (1 / area) * normal; // normalize
+            BV_node* node = queue.back().node;
+            queue.pop_back();
 
-            // face culling
-            if(dot(normal, -ray_dir) < 0.f)
+            if(!node->leaf)
+            {
+                for(int child_id = 0; child_id < node->child_count; ++child_id)
+                {
+                    BV_node* child = node->children[child_id];
+                    float t = ray_AABB_test(eye_pos, ray_dir, child->bbox_min, child->bbox_max);
+
+                    if(t != FLT_MAX)
+                    {
+                        // node is inserted before an element at insert_idx
+                        int insert_idx = queue.size();
+
+                        for(; insert_idx > 0; --insert_idx)
+                        {
+                            if(t <= queue[insert_idx - 1].t)
+                                break;
+                        }
+                        queue.insert(queue.begin() + insert_idx, {child, t});
+                    }
+                }
                 continue;
+            }
 
-            // plane-ray intersection
-            float t = (dot(normal, coords[0]) - dot(normal, eye_pos)) / dot(normal, ray_dir);
+            // test against triangles of a leaf node
 
-            // depth test
-            if(t > _ras.depth_buf[idx])
-                continue;
+            for(int base = 0; base < node->vert_count; base += 3)
+            {
+                vec3* coords = node->positions + base;
 
-            float dist_z = dot(eye_dir, t*ray_dir);
+                vec3 edge01 = coords[1] - coords[0];
+                vec3 edge12 = coords[2] - coords[1];
+                vec3 edge20 = coords[0] - coords[2];
+                vec3 normal = cross(edge01, edge12);
+                float area = length(normal);
+                normal = (1 / area) * normal; // normalize
 
-            // far / near plane cull
-            if(dist_z < near || dist_z > far)
-                continue;
+                // face culling
+                if(dot(normal, -ray_dir) < 0.f)
+                    continue;
 
-            vec3 frag_pos = eye_pos + t*ray_dir; // intersection point in a model space
-            float b0 = dot(normal, cross(edge12, frag_pos - coords[1])) / area;
-            float b1 = dot(normal, cross(edge20, frag_pos - coords[2])) / area;
-            float b2 = dot(normal, cross(edge01, frag_pos - coords[0])) / area;
+                // plane-ray intersection
+                float t = (dot(normal, coords[0]) - dot(normal, eye_pos)) / dot(normal, ray_dir);
 
-            // point on a plane is not in a triangle
-            if(b0 < 0 || b1 < 0 || b2 < 0)
-                continue;
+                // depth test
+                if(t > frag_t)
+                    continue;
 
-            vec3 frag_normal = (b0 * cmd.normals[base+0]) + (b1 * cmd.normals[base+1]) + (b2 * cmd.normals[base+2]); // model space
+                float dist_z = dot(eye_dir, t*ray_dir);
 
-            // transform frag_pos and frag_normal from the model space to a world space
-            vec4 hp = {frag_pos.x, frag_pos.y, frag_pos.z, 1};
-            hp = cmd.model_transform * hp;
-            Varying varying;
-            varying.pos = {hp.x, hp.y, hp.z};
-            varying.normal = model3 * frag_normal;
+                // far / near plane cull
+                if(dist_z < near || dist_z > far)
+                    continue;
 
-            _ras.depth_buf[idx] = t;
-            _ras_frag_shader(cmd, idx, varying);
+                vec3 new_frag_pos = eye_pos + t*ray_dir; // intersection point in a model space
+                float b0 = dot(normal, cross(edge12, new_frag_pos - coords[1])) / area;
+                float b1 = dot(normal, cross(edge20, new_frag_pos - coords[2])) / area;
+                float b2 = dot(normal, cross(edge01, new_frag_pos - coords[0])) / area;
+
+                // point on a plane is not in a triangle
+                if(b0 < 0 || b1 < 0 || b2 < 0)
+                    continue;
+
+                frag_valid = true;
+                frag_t = t;
+                frag_pos = new_frag_pos;
+                frag_normal = (b0 * node->normals[base+0]) + (b1 * node->normals[base+1]) + (b2 * node->normals[base+2]); // model space
+            }
         }
+
+        if(!frag_valid)
+            continue;
+
+        // transform frag_pos and frag_normal from the model space to a world space
+        vec4 hp = {frag_pos.x, frag_pos.y, frag_pos.z, 1};
+        hp = cmd.model_transform * hp;
+        Varying varying;
+        varying.pos = {hp.x, hp.y, hp.z};
+        varying.normal = model3 * frag_normal;
+
+        _ras.depth_buf[idx] = frag_t;
+        _ras_frag_shader(cmd, idx, varying);
     }
 }
 
@@ -923,7 +1019,7 @@ int main()
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
-    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 400, 400, SDL_WINDOW_OPENGL);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -952,6 +1048,7 @@ int main()
     bool enable_move = false;
     int render_mode = 0;
     bool use_persp = true;
+    bool allow_rot = false;
     vec3 camera_pos = {0.f, 0.f, 2.f};
     float pitch = 0;
     float yaw = 0;
@@ -968,8 +1065,8 @@ int main()
     cmd.specular_exp = 60;
     cmd.debug = false;
 
-    //load_model("model.obj", cmd.positions, cmd.normals, cmd.vertex_count);
-    cmd = test_triangle();
+    load_model("model.obj", cmd.positions, cmd.normals, cmd.vertex_count);
+    //cmd = test_triangle();
     BV_node* bvh_root = build_BVH(cmd.positions, cmd.normals, cmd.vertex_count);
     std::vector<vec3> segments;
 
@@ -996,7 +1093,6 @@ int main()
                     render_mode += 1;
 
                     if(render_mode > 2)
-                    //if(render_mode > 1)
                         render_mode = 0;
 
                     printf("switched to %s\n", render_mode == 0 ? "OpenGL" : render_mode == 1 ? "software rasterizer" : "raytracer");
@@ -1017,6 +1113,8 @@ int main()
                         break;
                     build_BHV_viz(bvh_root, 0, debug_bvh_level, segments);
                     break;
+                case SDLK_r:
+                    allow_rot = !allow_rot;
                 }
             }
             else if(event.type == SDL_MOUSEMOTION && enable_move)
@@ -1044,8 +1142,10 @@ int main()
         Uint64 current_counter = SDL_GetPerformanceCounter();
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
         prev_counter = current_counter;
-        rotation = quat_mul(rotation, quat_rot({0,1,0}, 2*pi/10*dt));
-        //cmd.model_transform = quat_to_mat4(rotation);
+
+        if(allow_rot)
+            rotation = quat_mul(rotation, quat_rot({0,1,0}, 2*pi/10*dt));
+        cmd.model_transform = quat_to_mat4(rotation);
 
         switch(render_mode)
         {
@@ -1065,7 +1165,7 @@ int main()
         case 2:
             ras_viewport(width, height);
             ras_clear_buffers();
-            raytracer_draw(cmd);
+            raytracer_draw(cmd, bvh_root);
             ras_display();
             break;
         default:
