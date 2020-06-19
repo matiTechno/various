@@ -649,46 +649,37 @@ void raytracer_draw(RenderCmd& cmd)
     if(!cmd.proj.data[14])
         return;
 
-    mat3 model3 = mat4_to_mat3(cmd.model_transform);
+    mat3 model3 = mat4_to_mat3(cmd.model_transform); // this is used to transform normals
     float left, right, bot, top, near, far;
     extract_frustum(cmd.proj, left, right, bot, top, near, far);
     int width = _ras.width;
     int height = _ras.height;
-    mat3 eye_basis = transpose(mat4_to_mat3(cmd.view)); // change of basis matrix
-    vec3 eye_pos = -1 * (eye_basis * vec3{cmd.view.data[3], cmd.view.data[7], cmd.view.data[11]});
-    vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
 
-    // or use invert_coord_change() instead
-    /*
-    mat4 world_from_view = invert_coord_change(cmd.view);
-    vec3 eye_basis = mat4_to_mat3(world_from_view);
-    vec3 eye_pos = {world_from_view.data[3], world_from_view.data[7], world_from_view.data[11]};
-    */
+    mat4 model_from_view = invert_coord_change(cmd.model_transform) * invert_coord_change(cmd.view); // model_from_world * world_from_view
+    // with respect to a model space; intersection test is performed in a model space
+    mat3 eye_basis = mat4_to_mat3(model_from_view);
+    vec3 eye_pos = {model_from_view.data[3], model_from_view.data[7], model_from_view.data[11]};
+    vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
 
     for(int idx = 0; idx < width * height; ++idx)
     {
-        int pix_x = idx % width;
-        int pix_y = idx / width;
-        float x = ((right - left)/width) * (pix_x + 0.5f) + left;
-        float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
-        float z = -near;
-        vec3 ray_dir = normalize( eye_basis * vec3{x, y, z} );
+        vec3 ray_dir;
+        {
+            int pix_x = idx % width;
+            int pix_y = idx / width;
+            float x = ((right - left)/width) * (pix_x + 0.5f) + left;
+            float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
+            float z = -near;
+            ray_dir = normalize( eye_basis * vec3{x, y, z} );
+        }
 
         for(int base = 0; base < cmd.vertex_count; base += 3)
         {
-            Varying vs[3];
+            vec3* coords = cmd.positions + base;
 
-            for(int i = 0; i < 3; ++i)
-            {
-                vec3 p = cmd.positions[base + i];
-                vec4 hp = {p.x, p.y, p.z, 1};
-                hp = cmd.model_transform * hp;
-                vs[i].pos = {hp.x, hp.y, hp.z};
-                vs[i].normal = model3 * cmd.normals[base + i];
-            }
-            vec3 edge01 = vs[1].pos - vs[0].pos;
-            vec3 edge12 = vs[2].pos - vs[1].pos;
-            vec3 edge20 = vs[0].pos - vs[2].pos;
+            vec3 edge01 = coords[1] - coords[0];
+            vec3 edge12 = coords[2] - coords[1];
+            vec3 edge20 = coords[0] - coords[2];
             vec3 normal = cross(edge01, edge12);
             float area = length(normal);
             normal = (1 / area) * normal; // normalize
@@ -697,7 +688,8 @@ void raytracer_draw(RenderCmd& cmd)
             if(dot(normal, -ray_dir) < 0.f)
                 continue;
 
-            float t = (dot(normal, vs[0].pos) - dot(normal, eye_pos)) / dot(normal, ray_dir);
+            // plane-ray intersection
+            float t = (dot(normal, coords[0]) - dot(normal, eye_pos)) / dot(normal, ray_dir);
 
             // depth test
             if(t > _ras.depth_buf[idx])
@@ -709,16 +701,26 @@ void raytracer_draw(RenderCmd& cmd)
             if(dist_z < near || dist_z > far)
                 continue;
 
-            vec3 p = eye_pos + t*ray_dir;
-            float b0 = dot(normal, cross(edge12, p - vs[1].pos)) / area;
-            float b1 = dot(normal, cross(edge20, p - vs[2].pos)) / area;
-            float b2 = dot(normal, cross(edge01, p - vs[0].pos)) / area;
+            vec3 frag_pos = eye_pos + t*ray_dir; // intersection point in a model space
+            float b0 = dot(normal, cross(edge12, frag_pos - coords[1])) / area;
+            float b1 = dot(normal, cross(edge20, frag_pos - coords[2])) / area;
+            float b2 = dot(normal, cross(edge01, frag_pos - coords[0])) / area;
 
             // point on a plane is not in a triangle
             if(b0 < 0 || b1 < 0 || b2 < 0)
                 continue;
+
+            vec3 frag_normal = (b0 * cmd.normals[base+0]) + (b1 * cmd.normals[base+1]) + (b2 * cmd.normals[base+2]); // model space
+
+            // transform frag_pos and frag_normal from the model space to a world space
+            vec4 hp = {frag_pos.x, frag_pos.y, frag_pos.z, 1};
+            hp = cmd.model_transform * hp;
+            Varying varying;
+            varying.pos = {hp.x, hp.y, hp.z};
+            varying.normal = model3 * frag_normal;
+
             _ras.depth_buf[idx] = t;
-            _ras_frag_shader(cmd, idx, (b0 * vs[0]) + (b1 * vs[1]) + (b2 * vs[2]) );
+            _ras_frag_shader(cmd, idx, varying);
         }
     }
 }
@@ -890,7 +892,7 @@ void build_BHV_viz(BV_node* node, int current_depth, int target_depth, std::vect
     v[1] = {bmax.x, bmin.y, bmin.z};
     v[2] = {bmax.x, bmin.y, bmax.z};
     v[3] = {bmin.x, bmin.y, bmax.z};
-    // higher y face surface
+    // higher y face
     for(int i = 4; i < 8; ++i)
     {
         v[i] = v[i - 4];
