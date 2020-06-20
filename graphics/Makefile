@@ -1,8 +1,10 @@
+COMMON = g++ -Wall -Wextra -fno-exceptions -fno-rtti main.cpp glad.c -lSDL2 -pthread
+
 perf:
-	g++ -Wall -Wextra -fno-exceptions -fno-rtti -O3 -mavx2 main.cpp glad.c -lSDL2
+	$(COMMON) -O3 -mavx2
 
 profile:
-	g++ -Wall -Wextra -ggdb -fno-omit-frame-pointer -fno-exceptions -fno-rtti -O3 -mavx2 main.cpp glad.c -lSDL2
+	$(COMMON) -O3 -mavx2 -ggdb -fno-omit-frame-pointer
 
 deb:
-	g++ -Wall -Wextra -g main.cpp glad.c -lSDL2
+	$(COMMON) -g

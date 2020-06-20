@@ -5,8 +5,14 @@
 #include <stdio.h>
 #include <float.h>
 #include <vector>
+#include <pthread.h>
 #include "glad.h"
 #include "main.hpp"
+
+// these can be tweaked
+#define BVH_MAX_DEPTH 7
+#define THREAD_COUNT 12
+#define THREAD_PX_CHUNK_SIZE 24
 
 struct RenderCmd
 {
@@ -144,8 +150,6 @@ Varying operator*(float scalar, Varying v)
         v.data[i] *= scalar;
     return v;
 }
-
-#define BVH_MAX_DEPTH 7
 
 struct BV_node
 {
@@ -334,7 +338,17 @@ struct
     GLuint vao;
     GLuint program;
     GLuint texture;
+    // raytracer data for multithreading
+    uint64_t threads_busy_mask;
+    int next_pixel_idx;
+    pthread_cond_t* cv;
+    pthread_mutex_t* mutex;
+    pthread_t threads[THREAD_COUNT];
+    RenderCmd* raytracer_cmd;
+    BV_node* bvh_root;
 } _ras;
+
+void* raytracer_thread_start(void*);
 
 void ras_init()
 {
@@ -370,6 +384,19 @@ void ras_init()
     glGenTextures(1, &_ras.texture);
     glBindTexture(GL_TEXTURE_2D, _ras.texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+    _ras.cv = (pthread_cond_t*)malloc(sizeof(pthread_cond_t));
+    _ras.mutex = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+
+    _ras.threads_busy_mask = 0;
+    int rc = pthread_cond_init(_ras.cv, nullptr);
+    assert(!rc);
+    rc = pthread_mutex_init(_ras.mutex, nullptr);
+    assert(!rc);
+    assert(THREAD_COUNT <= sizeof(_ras.threads_busy_mask) * 8);
+
+    for(int i = 0; i < THREAD_COUNT; ++i)
+        pthread_create(_ras.threads + i, nullptr, raytracer_thread_start, (void*)((uint64_t)(1) << i) );
 }
 
 void ras_viewport(int width, int height)
@@ -692,7 +719,7 @@ struct Intersection
     float t;
 };
 
-void raytracer_draw(RenderCmd& cmd, BV_node* bvh_root)
+void raytracer_thread_work(RenderCmd& cmd, BV_node* bvh_root)
 {
     // exit if projection is orthographic
     // todo
@@ -714,120 +741,177 @@ void raytracer_draw(RenderCmd& cmd, BV_node* bvh_root)
     // note: bounding volumes are allowed to overlap
     std::vector<Intersection> queue; // sorted in a descending order of t
 
-    for(int idx = 0; idx < width * height; ++idx)
+    int image_size = width * height;
+
+    for(;;)
     {
-        queue.clear();
-        vec3 ray_dir;
+        int idx_start = __sync_fetch_and_add(&_ras.next_pixel_idx, THREAD_PX_CHUNK_SIZE);
+
+        if(idx_start >= image_size)
+            break;
+
+        int idx_end = idx_start + min(THREAD_PX_CHUNK_SIZE, image_size - idx_start);
+
+        for(int idx = idx_start; idx < idx_end; ++idx)
         {
-            int pix_x = idx % width;
-            int pix_y = idx / width;
-            float x = ((right - left)/width) * (pix_x + 0.5f) + left;
-            float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
-            float z = -near;
-            ray_dir = normalize( eye_basis * vec3{x, y, z} );
-
-            float t = ray_AABB_test(eye_pos, ray_dir, bvh_root->bbox_min, bvh_root->bbox_max);
-
-            if(t >= 0)
-                queue.push_back({bvh_root, t});
-        }
-
-        // closest intersected fragment
-        bool frag_valid = false; // if passed all the tests
-        float frag_t = _ras.depth_buf[idx]; // t parameter of the intersection
-        vec3 frag_pos;
-        vec3 frag_normal;
-
-        while(queue.size())
-        {
-            if(queue.back().t > frag_t)
-                break;
-
-            BV_node* node = queue.back().node;
-            queue.pop_back();
-
-            if(!node->leaf)
+            queue.clear();
+            vec3 ray_dir;
             {
-                for(int child_id = 0; child_id < node->child_count; ++child_id)
-                {
-                    BV_node* child = node->children[child_id];
-                    float t = ray_AABB_test(eye_pos, ray_dir, child->bbox_min, child->bbox_max);
+                int pix_x = idx % width;
+                int pix_y = idx / width;
+                float x = ((right - left)/width) * (pix_x + 0.5f) + left;
+                float y = ((top - bot)/height) * (pix_y + 0.5f) + bot;
+                float z = -near;
+                ray_dir = normalize( eye_basis * vec3{x, y, z} );
 
-                    if(t < 0)
+                float t = ray_AABB_test(eye_pos, ray_dir, bvh_root->bbox_min, bvh_root->bbox_max);
+
+                if(t >= 0)
+                    queue.push_back({bvh_root, t});
+            }
+
+            // closest intersected fragment
+            bool frag_valid = false; // if passed all the tests
+            float frag_t = _ras.depth_buf[idx]; // t parameter of the intersection
+            vec3 frag_pos;
+            vec3 frag_normal;
+
+            while(queue.size())
+            {
+                if(queue.back().t > frag_t)
+                    break;
+
+                BV_node* node = queue.back().node;
+                queue.pop_back();
+
+                if(!node->leaf)
+                {
+                    for(int child_id = 0; child_id < node->child_count; ++child_id)
+                    {
+                        BV_node* child = node->children[child_id];
+                        float t = ray_AABB_test(eye_pos, ray_dir, child->bbox_min, child->bbox_max);
+
+                        if(t < 0)
+                            continue;
+
+                        // node is inserted before an element at insert_idx
+                        int insert_idx = queue.size();
+
+                        for(; insert_idx > 0; --insert_idx)
+                        {
+                            if(t <= queue[insert_idx - 1].t)
+                                break;
+                        }
+                        queue.insert(queue.begin() + insert_idx, {child, t});
+                    }
+                    continue;
+                }
+
+                // test against triangles of a leaf node
+
+                for(int base = 0; base < node->vert_count; base += 3)
+                {
+                    vec3* coords = node->positions + base;
+
+                    vec3 edge01 = coords[1] - coords[0];
+                    vec3 edge12 = coords[2] - coords[1];
+                    vec3 edge20 = coords[0] - coords[2];
+                    vec3 normal = cross(edge01, edge12);
+                    float area = length(normal);
+                    normal = (1 / area) * normal; // normalize
+
+                    // face culling
+                    if(dot(normal, -ray_dir) < 0.f)
                         continue;
 
-                    // node is inserted before an element at insert_idx
-                    int insert_idx = queue.size();
+                    // plane-ray intersection
+                    float t = (dot(normal, coords[0]) - dot(normal, eye_pos)) / dot(normal, ray_dir);
 
-                    for(; insert_idx > 0; --insert_idx)
-                    {
-                        if(t <= queue[insert_idx - 1].t)
-                            break;
-                    }
-                    queue.insert(queue.begin() + insert_idx, {child, t});
+                    // depth test
+                    if(t > frag_t)
+                        continue;
+
+                    float dist_z = dot(eye_dir, t*ray_dir);
+
+                    // far / near plane cull
+                    if(dist_z < near || dist_z > far)
+                        continue;
+
+                    vec3 new_frag_pos = eye_pos + t*ray_dir; // intersection point in a model space
+                    float b0 = dot(normal, cross(edge12, new_frag_pos - coords[1])) / area;
+                    float b1 = dot(normal, cross(edge20, new_frag_pos - coords[2])) / area;
+                    float b2 = dot(normal, cross(edge01, new_frag_pos - coords[0])) / area;
+
+                    // point on a plane is not in a triangle
+                    if(b0 < 0 || b1 < 0 || b2 < 0)
+                        continue;
+
+                    frag_valid = true;
+                    frag_t = t;
+                    frag_pos = new_frag_pos;
+                    frag_normal = (b0 * node->normals[base+0]) + (b1 * node->normals[base+1]) + (b2 * node->normals[base+2]); // model space
                 }
+            }
+
+            if(!frag_valid)
                 continue;
-            }
 
-            // test against triangles of a leaf node
+            // transform frag_pos and frag_normal from the model space to a world space
+            vec4 hp = {frag_pos.x, frag_pos.y, frag_pos.z, 1};
+            hp = cmd.model_transform * hp;
+            Varying varying;
+            varying.pos = {hp.x, hp.y, hp.z};
+            varying.normal = model3 * frag_normal;
 
-            for(int base = 0; base < node->vert_count; base += 3)
-            {
-                vec3* coords = node->positions + base;
+            _ras.depth_buf[idx] = frag_t;
+            _ras_frag_shader(cmd, idx, varying);
+        } // pixel loop
+    } // chunk loop
+}
 
-                vec3 edge01 = coords[1] - coords[0];
-                vec3 edge12 = coords[2] - coords[1];
-                vec3 edge20 = coords[0] - coords[2];
-                vec3 normal = cross(edge01, edge12);
-                float area = length(normal);
-                normal = (1 / area) * normal; // normalize
+void* raytracer_thread_start(void* _arg)
+{
+    int thread_flag = (uint64_t)_arg;
 
-                // face culling
-                if(dot(normal, -ray_dir) < 0.f)
-                    continue;
+    for(;;)
+    {
+        pthread_mutex_lock(_ras.mutex);
 
-                // plane-ray intersection
-                float t = (dot(normal, coords[0]) - dot(normal, eye_pos)) / dot(normal, ray_dir);
+        while( (_ras.threads_busy_mask & thread_flag) == 0)
+            pthread_cond_wait(_ras.cv, _ras.mutex);
 
-                // depth test
-                if(t > frag_t)
-                    continue;
+        pthread_mutex_unlock(_ras.mutex);
 
-                float dist_z = dot(eye_dir, t*ray_dir);
+        raytracer_thread_work(*_ras.raytracer_cmd, _ras.bvh_root);
 
-                // far / near plane cull
-                if(dist_z < near || dist_z > far)
-                    continue;
-
-                vec3 new_frag_pos = eye_pos + t*ray_dir; // intersection point in a model space
-                float b0 = dot(normal, cross(edge12, new_frag_pos - coords[1])) / area;
-                float b1 = dot(normal, cross(edge20, new_frag_pos - coords[2])) / area;
-                float b2 = dot(normal, cross(edge01, new_frag_pos - coords[0])) / area;
-
-                // point on a plane is not in a triangle
-                if(b0 < 0 || b1 < 0 || b2 < 0)
-                    continue;
-
-                frag_valid = true;
-                frag_t = t;
-                frag_pos = new_frag_pos;
-                frag_normal = (b0 * node->normals[base+0]) + (b1 * node->normals[base+1]) + (b2 * node->normals[base+2]); // model space
-            }
-        }
-
-        if(!frag_valid)
-            continue;
-
-        // transform frag_pos and frag_normal from the model space to a world space
-        vec4 hp = {frag_pos.x, frag_pos.y, frag_pos.z, 1};
-        hp = cmd.model_transform * hp;
-        Varying varying;
-        varying.pos = {hp.x, hp.y, hp.z};
-        varying.normal = model3 * frag_normal;
-
-        _ras.depth_buf[idx] = frag_t;
-        _ras_frag_shader(cmd, idx, varying);
+        pthread_mutex_lock(_ras.mutex);
+        _ras.threads_busy_mask &= ~thread_flag;
+        pthread_mutex_unlock(_ras.mutex);
+        pthread_cond_broadcast(_ras.cv);
     }
+    return nullptr;
+}
+
+// this is what a user calls
+
+void raytracer_draw(RenderCmd& cmd, BV_node* bvh_root)
+{
+    assert(!_ras.threads_busy_mask);
+    _ras.next_pixel_idx = 0;
+    _ras.raytracer_cmd = &cmd;
+    _ras.bvh_root = bvh_root;
+
+    pthread_mutex_lock(_ras.mutex);
+
+    for(int i = 0; i < THREAD_COUNT; ++i)
+        _ras.threads_busy_mask |= (uint64_t)1 << i;
+
+    pthread_cond_broadcast(_ras.cv); // kick off the threads
+
+    while(_ras.threads_busy_mask)
+        pthread_cond_wait(_ras.cv, _ras.mutex);
+
+    pthread_mutex_unlock(_ras.mutex);
 }
 
 void gl_draw(RenderCmd& cmd, GLuint program)
