@@ -403,31 +403,34 @@ void ras_viewport(int width, int height)
 {
     if(width == _ras.width && height == _ras.height)
         return;
-    _ras.depth_buf = (float*)malloc(width * height * sizeof(float));
-    _ras.color_buf = (u8*)malloc(width * height * 3);
     _ras.width = width;
     _ras.height = height;
+    free(_ras.depth_buf);
+    free(_ras.color_buf);
+    _ras.depth_buf = (float*)malloc(width * height * sizeof(float));
+    // note: we are using 4 bytes per pixel to avoid problems with updating OpenGL texture (alignment issues)
+    _ras.color_buf = (u8*)malloc(width * height * 4);
     glBindTexture(GL_TEXTURE_2D, _ras.texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 }
 
 void ras_display()
 {
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
     glViewport(0, 0, _ras.width, _ras.height);
     glBindTexture(GL_TEXTURE_2D, _ras.texture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, _ras.width, _ras.height, GL_RGB, GL_UNSIGNED_BYTE, _ras.color_buf);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, _ras.width, _ras.height, GL_RGBA, GL_UNSIGNED_BYTE, _ras.color_buf);
     glBindVertexArray(_ras.vao);
     glUseProgram(_ras.program);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    glEnable(GL_DEPTH_TEST);
 }
 
 void ras_clear_buffers()
 {
     for(int i = 0; i < _ras.width * _ras.height; ++i)
         _ras.depth_buf[i] = FLT_MAX;
-    memset(_ras.color_buf, 0, _ras.width * _ras.height * 3);
+    memset(_ras.color_buf, 0, _ras.width * _ras.height * 4);
 }
 
 void _ras_draw1(RenderCmd& cmd, vec4* coords, Varying* varyings);
@@ -566,9 +569,9 @@ void _ras_frag_shader(RenderCmd& cmd, int idx, Varying varying)
     color.x = min(color.x, 1.f);
     color.y = min(color.y, 1.f);
     color.z = min(color.z, 1.f);
-    _ras.color_buf[idx*3 + 0] = 255.f * color.x + 0.5f;
-    _ras.color_buf[idx*3 + 1] = 255.f * color.y + 0.5f;
-    _ras.color_buf[idx*3 + 2] = 255.f * color.z + 0.5f;
+    _ras.color_buf[idx*4 + 0] = 255.f * color.x + 0.5f;
+    _ras.color_buf[idx*4 + 1] = 255.f * color.y + 0.5f;
+    _ras.color_buf[idx*4 + 2] = 255.f * color.z + 0.5f;
 }
 
 float signed_area(float lhs_x, float lhs_y, float rhs_x, float rhs_y)
@@ -1125,7 +1128,7 @@ int main()
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
-    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 400, 400, SDL_WINDOW_OPENGL);
+    //SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 400, 400, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     assert(window);
     SDL_GLContext context =  SDL_GL_CreateContext(window);
     assert(context);
@@ -1286,11 +1289,11 @@ int main()
         {
             ras_viewport(width, height);
             ras_clear_buffers();
-            Uint64 c1 = SDL_GetPerformanceCounter();
+            //Uint64 c1 = SDL_GetPerformanceCounter();
             raytracer_draw(cmd, bvh_root);
-            Uint64 c2 = SDL_GetPerformanceCounter();
-            double dt = (c2 - c1) / (double)SDL_GetPerformanceFrequency();
-            printf("raytracer render time: %f\n", dt);
+            //Uint64 c2 = SDL_GetPerformanceCounter();
+            //double dt = (c2 - c1) / (double)SDL_GetPerformanceFrequency();
+            //printf("raytracer render time: %f\n", dt);
             ras_display();
             break;
         }
