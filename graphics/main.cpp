@@ -642,39 +642,48 @@ void extract_frustum(mat4 persp, float& l, float& r, float& b, float& t, float& 
     t = n*(persp.data[6] + 1) / persp.data[5];
 }
 
-// returns FLT_MAX on a miss
+// returns a negative value on a miss
 
 float ray_AABB_test(vec3 ray_start, vec3 ray_dir, vec3 box_min, vec3 box_max)
 {
-    float closest_t = FLT_MAX;
+    vec3 inv_dir = {1 / ray_dir.x, 1 / ray_dir.y, 1 / ray_dir.z};
 
-    vec3 plane_pos;
-    plane_pos.x = ray_dir.x > 0 ? box_min.x : box_max.x;
-    plane_pos.y = ray_dir.y > 0 ? box_min.y : box_max.y;
-    plane_pos.z = ray_dir.z > 0 ? box_min.z : box_max.z;
+    float tx1 = (box_min.x - ray_start.x) * inv_dir.x;
+    float tx2 = (box_max.x - ray_start.x) * inv_dir.x;
 
-    for(int i = 0; i < 3; ++i)
+    if(tx1 > tx2)
     {
-        float t = (plane_pos[i] - ray_start[i]) / ray_dir[i];
-
-        if(t < 0 || t > closest_t)
-            continue;
-
-        vec3 p = ray_start + t * ray_dir;
-        int fail = 0;
-
-        for(int k = 0; k < 3 && !fail; ++k)
-        {
-            if(k == i)
-                continue;
-            fail |= p[k] < box_min[k];
-            fail |= p[k] > box_max[k];
-        }
-
-        if(!fail)
-            closest_t = t;
+        float tmp = tx2;
+        tx2 = tx1;
+        tx1 = tmp;
     }
-    return closest_t;
+
+    float ty1 = (box_min.y - ray_start.y) * inv_dir.y;
+    float ty2 = (box_max.y - ray_start.y) * inv_dir.y;
+
+    if(ty1 > ty2)
+    {
+        float tmp = ty2;
+        ty2 = ty1;
+        ty1 = tmp;
+    }
+
+    float tz1 = (box_min.z - ray_start.z) * inv_dir.z;
+    float tz2 = (box_max.z - ray_start.z) * inv_dir.z;
+
+    if(tz1 > tz2)
+    {
+        float tmp = tz2;
+        tz2 = tz1;
+        tz1 = tmp;
+    }
+
+    float tmin = max(tx1, max(ty1, tz1));
+    float tmax = min(tx2, min(ty2, tz2));
+
+    if(tmin <= tmax)
+        return tmin;
+    return -1;
 }
 
 struct Intersection
@@ -719,7 +728,7 @@ void raytracer_draw(RenderCmd& cmd, BV_node* bvh_root)
 
             float t = ray_AABB_test(eye_pos, ray_dir, bvh_root->bbox_min, bvh_root->bbox_max);
 
-            if(t != FLT_MAX)
+            if(t >= 0)
                 queue.push_back({bvh_root, t});
         }
 
@@ -744,18 +753,18 @@ void raytracer_draw(RenderCmd& cmd, BV_node* bvh_root)
                     BV_node* child = node->children[child_id];
                     float t = ray_AABB_test(eye_pos, ray_dir, child->bbox_min, child->bbox_max);
 
-                    if(t != FLT_MAX)
-                    {
-                        // node is inserted before an element at insert_idx
-                        int insert_idx = queue.size();
+                    if(t < 0)
+                        continue;
 
-                        for(; insert_idx > 0; --insert_idx)
-                        {
-                            if(t <= queue[insert_idx - 1].t)
-                                break;
-                        }
-                        queue.insert(queue.begin() + insert_idx, {child, t});
+                    // node is inserted before an element at insert_idx
+                    int insert_idx = queue.size();
+
+                    for(; insert_idx > 0; --insert_idx)
+                    {
+                        if(t <= queue[insert_idx - 1].t)
+                            break;
                     }
+                    queue.insert(queue.begin() + insert_idx, {child, t});
                 }
                 continue;
             }
