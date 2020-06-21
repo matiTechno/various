@@ -396,7 +396,10 @@ void ras_init()
     assert(THREAD_COUNT <= sizeof(_ras.threads_busy_mask) * 8);
 
     for(int i = 0; i < THREAD_COUNT; ++i)
-        pthread_create(_ras.threads + i, nullptr, raytracer_thread_start, (void*)((uint64_t)(1) << i) );
+    {
+        rc = pthread_create(_ras.threads + i, nullptr, raytracer_thread_start, (void*)((uint64_t)(1) << i) );
+        assert(!rc);
+    }
 }
 
 void ras_viewport(int width, int height)
@@ -614,10 +617,10 @@ void _ras_draw2(RenderCmd& cmd, vec4* coords, Varying* varyings)
 
     for(int i = 1; i < 3; ++i)
     {
-        min_x = coords[i].x < min_x ? coords[i].x : min_x;
-        max_x = coords[i].x > max_x ? coords[i].x : max_x;
-        min_y = coords[i].y < min_y ? coords[i].y : min_y;
-        max_y = coords[i].y > max_y ? coords[i].y : max_y;
+        min_x = min(min_x, coords[i].x);
+        max_x = max(max_x, coords[i].x);
+        min_y = min(min_y, coords[i].y);
+        max_y = max(max_y, coords[i].y);
     }
 
     // clip a triangle bounding box to a viewport area
