@@ -15,6 +15,41 @@ float min(float lhs, float rhs)
     return lhs < rhs ? lhs : rhs;
 }
 
+struct vec2
+{
+    float x;
+    float y;
+
+    float& operator[](int idx)
+    {
+        return (&x)[idx];
+    }
+};
+
+inline
+vec2 operator-(vec2 v)
+{
+    return {-v.x, -v.y};
+}
+
+inline
+vec2 operator+(vec2 lhs, vec2 rhs)
+{
+    return {lhs.x + rhs.x, lhs.y + rhs.y};
+}
+
+inline
+vec2 operator-(vec2 lhs, vec2 rhs)
+{
+    return {lhs.x - rhs.x, lhs.y - rhs.y};
+}
+
+inline
+vec2 operator*(float scalar, vec2 rhs)
+{
+    return {scalar * rhs.x, scalar * rhs.y};
+}
+
 struct vec3
 {
     float x;
@@ -108,6 +143,12 @@ struct mat4
 };
 
 inline
+float dot(vec2 lhs, vec2 rhs)
+{
+    return (lhs.x * rhs.x) + (lhs.y * rhs.y);
+}
+
+inline
 float dot(vec3 lhs, vec3 rhs)
 {
     return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
@@ -126,6 +167,12 @@ vec3 cross(vec3 lhs, vec3 rhs)
 }
 
 inline
+float length(vec2 v)
+{
+    return sqrtf(dot(v, v));
+}
+
+inline
 float length(vec3 v)
 {
     return sqrtf(dot(v, v));
@@ -135,6 +182,13 @@ inline
 float length(vec4 v)
 {
     return sqrtf(dot(v, v));
+}
+
+inline
+vec2 normalize(vec2 v)
+{
+    float l = length(v);
+    return {v.x / l, v.y / l};
 }
 
 inline
@@ -149,22 +203,6 @@ vec4 normalize(vec4 v)
 {
     float l = length(v);
     return {v.x / l, v.y / l, v.z / l, v.w / l};
-}
-
-inline
-mat3 operator+(mat3 lhs, mat3 rhs)
-{
-    for(int i = 0; i < 9; ++i)
-        lhs.data[i] += rhs.data[i];
-    return lhs;
-}
-
-inline
-mat4 operator+(mat4 lhs, mat4 rhs)
-{
-    for(int i = 0; i < 16; ++i)
-        lhs.data[i] += rhs.data[i];
-    return lhs;
 }
 
 inline
@@ -270,7 +308,7 @@ mat3 identity3()
 {
     mat3 m = {};
     m.data[0] = 1;
-    m.data[5] = 1;
+    m.data[4] = 1;
     m.data[8] = 1;
     return m;
 }
