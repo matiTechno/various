@@ -80,6 +80,7 @@ void rebuild_matrix(Nav2d& nav)
     float rt_aspect = right / top;
     float aspect = nav.win_width / nav.win_height;
 
+    // expand right/top to match a window aspect ratio
     if(aspect > rt_aspect)
         right = aspect * top;
     else
