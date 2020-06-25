@@ -205,17 +205,19 @@ void draw_segment(GLuint prog, vec3 v1, vec3 v2, vec3 color)
     glDeleteVertexArrays(1, &vao);
 }
 
-float plane_ray_test(vec3 plane_normal, vec3 plane_pos, vec3 ray_start, vec3 ray_dir)
-{
-    float t = dot(plane_normal, plane_pos - ray_start) / dot(plane_normal, ray_dir);
-    return t;
-}
-
 vec3 transform3(mat4 m, vec3 v)
 {
     vec4 h = {v.x, v.y, v.z, 1};
     h = m * h;
     return {h.x, h.y, h.z};
+}
+
+// does not handle a parallel case
+
+float plane_ray_test(vec3 plane_normal, vec3 plane_pos, vec3 ray_start, vec3 ray_dir)
+{
+    float t = dot(plane_normal, plane_pos - ray_start) / dot(plane_normal, ray_dir);
+    return t;
 }
 
 struct Nav
@@ -233,6 +235,7 @@ struct Nav
     float top;
     float near;
     float far;
+    bool ortho;
 };
 
 void rebuild_view_matrix(Nav& nav)
@@ -256,8 +259,13 @@ void rebuild_view_matrix(Nav& nav)
 void rebuild_proj_matrix(Nav& nav)
 {
     float aspect = nav.win_size.x / nav.win_size.y;
-    float right = nav.top * aspect;
-    nav.proj = frustum(-right, right, -nav.top, nav.top, nav.near, nav.far);
+    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
+    float right = top * aspect;
+
+    if(nav.ortho)
+        nav.proj = orthographic(-right, right, -top, top, nav.near, nav.far);
+    else
+        nav.proj = frustum(-right, right, -top, top, nav.near, nav.far);
 }
 
 void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fovy, float near, float far)
@@ -274,21 +282,31 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
     nav.top = tanf(deg_to_rad(fovy) / 2.f) * near;
     nav.near = near;
     nav.far = far;
-
+    nav.ortho = false;
     rebuild_view_matrix(nav);
     rebuild_proj_matrix(nav);
 }
 
-void get_cursor_ray(Nav& nav, vec2 cursor_win, vec3& ray_start, vec3& ray_dir)
+void nav_get_cursor_ray(Nav& nav, vec2 cursor_win, vec3& ray_start, vec3& ray_dir)
 {
-    float top = nav.top;
-    float right = nav.top * (nav.win_size.x / nav.win_size.y);
+    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
+    float right = top * (nav.win_size.x / nav.win_size.y);
     float x = (2*right/nav.win_size.x) * (cursor_win.x + 0.5) - right;
     float y = (-2*top/nav.win_size.y) * (cursor_win.y + 0.5) + top;
     float z = -nav.near;
-    mat3 eye_basis = transpose( mat4_to_mat3(nav.view) );
-    ray_dir = normalize( eye_basis * vec3{x,y,z} );
-    ray_start = nav.eye_pos;
+    mat4 world_f_view = invert_coord_change(nav.view);
+
+    if(nav.ortho)
+    {
+        ray_start = transform3(world_f_view, vec3{x,y,z});
+        ray_dir = normalize(nav.center - nav.eye_pos);
+    }
+    else
+    {
+        mat3 eye_basis = mat4_to_mat3(world_f_view);
+        ray_start = nav.eye_pos;
+        ray_dir = normalize( eye_basis * vec3{x,y,z} );
+    }
 }
 
 void nav_process_event(Nav& nav, SDL_Event& e)
@@ -308,10 +326,10 @@ void nav_process_event(Nav& nav, SDL_Event& e)
             for(int i = 0; i < 2; ++i)
             {
                 vec3 ray_start, ray_dir;
-                get_cursor_ray(nav, cursors[i], ray_start, ray_dir);
+                nav_get_cursor_ray(nav, cursors[i], ray_start, ray_dir);
                 float t = plane_ray_test(normal, nav.center, ray_start, ray_dir);
                 assert(t > 0);
-                points[i] = nav.center + t*ray_dir;
+                points[i] = ray_start + t*ray_dir;
             }
             vec3 d = points[0] - points[1];
             nav.eye_pos = nav.eye_pos + d;
@@ -338,6 +356,9 @@ void nav_process_event(Nav& nav, SDL_Event& e)
         float scale = e.wheel.y < 0 ? powf(1.3, -e.wheel.y) : (1 / powf(1.3, e.wheel.y));
         nav.eye_pos = nav.center + (scale * diff);
         rebuild_view_matrix(nav);
+
+        if(nav.ortho)
+            rebuild_proj_matrix(nav);
         break;
     }
     case SDL_WINDOWEVENT:
@@ -369,6 +390,11 @@ void nav_process_event(Nav& nav, SDL_Event& e)
     {
         if(e.key.keysym.sym == SDLK_LSHIFT)
             nav.shift_down = true;
+        else if(e.key.keysym.sym == SDLK_p)
+        {
+            nav.ortho = !nav.ortho;
+            rebuild_proj_matrix(nav);
+        }
         break;
     }
     case SDL_KEYUP:
