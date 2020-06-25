@@ -236,6 +236,8 @@ struct Nav
     float near;
     float far;
     bool ortho;
+    bool aligned;
+    int align_dir;
 };
 
 void rebuild_view_matrix(Nav& nav)
@@ -283,6 +285,7 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
     nav.near = near;
     nav.far = far;
     nav.ortho = false;
+    nav.aligned = false;
     rebuild_view_matrix(nav);
     rebuild_proj_matrix(nav);
 }
@@ -376,6 +379,13 @@ void nav_process_event(Nav& nav, SDL_Event& e)
             break;
         nav.mmb_down = !nav.shift_down;
         nav.mmb_shift_down = nav.shift_down;
+
+        if(nav.mmb_down)
+        {
+            nav.ortho = false;
+            nav.aligned = false;
+            rebuild_proj_matrix(nav);
+        }
         break;
     }
     case SDL_MOUSEBUTTONUP:
@@ -388,13 +398,50 @@ void nav_process_event(Nav& nav, SDL_Event& e)
     }
     case SDL_KEYDOWN:
     {
-        if(e.key.keysym.sym == SDLK_LSHIFT)
-            nav.shift_down = true;
-        else if(e.key.keysym.sym == SDLK_p)
+        vec3 new_dir = {};
+        vec3 new_x;
+        bool flip_x = false;
+
+        switch(e.key.keysym.sym)
         {
+        case SDLK_LSHIFT:
+            nav.shift_down = true;
+            break;
+        case SDLK_p:
             nav.ortho = !nav.ortho;
             rebuild_proj_matrix(nav);
+            break;
+        case SDLK_x:
+            new_dir = {1,0,0};
+            new_x = {0,0,1};
+            flip_x = true;
+            break;
+        case SDLK_y:
+            new_dir = {0,-1,0};
+            new_x = {1,0,0};
+            break;
+        case SDLK_z:
+            new_dir = {0,0,-1};
+            new_x = {1,0,0};
+            flip_x = true;
+            break;
         }
+        if(dot(new_dir, new_dir) == 0)
+            break;
+
+        if(nav.aligned)
+            nav.align_dir *= -1;
+        else
+        {
+            nav.aligned = true;
+            nav.align_dir = 1;
+        }
+        float radius = length(nav.center - nav.eye_pos);
+        nav.eye_pos = nav.center - (radius * nav.align_dir * new_dir);
+        nav.eye_x = flip_x ? nav.align_dir * new_x : new_x;
+        nav.ortho = true;
+        rebuild_view_matrix(nav);
+        rebuild_proj_matrix(nav);
         break;
     }
     case SDL_KEYUP:
