@@ -91,12 +91,35 @@ struct Vertex
     vec3 normal;
 };
 
+struct BBox
+{
+    vec3 min;
+    vec3 max;
+};
+
+struct BVHPrim
+{
+    Vertex verts[3];
+    BBox bbox;
+    vec3 centroid;
+};
+
+struct BVHNode
+{
+    BVHNode* children[2];
+    BBox bbox;
+    int vert_count;
+    int vert_offset;
+    int split_axis;
+};
+
 struct Mesh
 {
     Vertex* vertices;
     int vertex_count;
     GLuint vao;
     GLuint vbo;
+    BVHNode* bvh_root;
 };
 
 struct Object
@@ -106,6 +129,153 @@ struct Object
     mat4 rotation;
     vec3 scale;
 };
+
+BBox compute_bbox(Vertex* verts, int vert_count)
+{
+    assert(vert_count);
+    BBox bbox;
+    bbox.min = verts[0].pos;
+    bbox.max = verts[0].pos;
+
+    for(int i = 1; i < vert_count; ++i)
+    {
+        vec3 p = verts[i].pos;
+
+        for(int dim = 0; dim < 3; ++dim)
+        {
+            bbox.min[dim] = min(bbox.min[dim], p[dim]);
+            bbox.max[dim] = max(bbox.max[dim], p[dim]);
+        }
+    }
+    return bbox;
+}
+
+BBox bbox_union(BBox lhs, BBox rhs)
+{
+    BBox bbox;
+
+    for(int dim = 0; dim < 3; ++dim)
+    {
+        bbox.min[dim] = min(lhs.min[dim], rhs.min[dim]);
+        bbox.max[dim] = max(lhs.max[dim], rhs.max[dim]);
+    }
+    return bbox;
+}
+
+int _cmp_dim;
+
+int cmp_prims(const void* _lhs, const void* _rhs)
+{
+    BVHPrim* lhs = (BVHPrim*)_lhs;
+    BVHPrim* rhs = (BVHPrim*)_rhs;
+    float l = lhs->centroid[_cmp_dim];
+    float r = rhs->centroid[_cmp_dim];
+
+    if(l < r)
+        return -1;
+    if(l == r)
+        return 0;
+    return 1;
+}
+
+BVHNode* build_BVH_rec(BVHPrim* prims, int prim_count, std::vector<Vertex>& ordered_verts)
+{
+    assert(prim_count);
+    BVHNode* node = (BVHNode*)malloc(sizeof(BVHNode));
+    node->vert_count = 0;
+    node->bbox = prims[0].bbox;
+
+    for(int i = 1; i < prim_count; ++i)
+        node->bbox = bbox_union(node->bbox, prims[i].bbox);
+
+    if(prim_count <= 4)
+    {
+        node->vert_count = prim_count * 3;
+        node->vert_offset = ordered_verts.size();
+
+        for(int i = 0; i < prim_count; ++i)
+        {
+            ordered_verts.push_back(prims[i].verts[0]);
+            ordered_verts.push_back(prims[i].verts[1]);
+            ordered_verts.push_back(prims[i].verts[2]);
+        }
+        return node;
+    }
+
+    BBox centroid_bbox = {prims[0].centroid, prims[0].centroid};
+
+    for(int i = 1; i < prim_count; ++i)
+        centroid_bbox = bbox_union(centroid_bbox, BBox{prims[1].centroid, prims[1].centroid});
+
+    int dim = 0;
+    float extent = 0;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        float d = centroid_bbox.max[i] - centroid_bbox.min[i];
+
+        if(d > extent)
+        {
+            dim = i;
+            extent = d;
+        }
+    }
+
+    if(!extent)
+    {
+        node->vert_count = prim_count * 3;
+        node->vert_offset = ordered_verts.size();
+
+        for(int i = 0; i < prim_count; ++i)
+        {
+            ordered_verts.push_back(prims[i].verts[0]);
+            ordered_verts.push_back(prims[i].verts[1]);
+            ordered_verts.push_back(prims[i].verts[2]);
+        }
+        return node;
+    }
+    _cmp_dim = dim;
+    qsort(prims, prim_count, sizeof(BVHPrim), cmp_prims);
+    float midp = 0.5 * (centroid_bbox.max[dim] + centroid_bbox.min[dim]);
+    int mid_id = 0;
+
+    for(; mid_id < prim_count; ++mid_id)
+    {
+        if(prims[mid_id].centroid[dim] > midp)
+            break;
+    }
+    // do a median splitting if a midpoint splitting fails; primitives are already sorted
+
+    if(mid_id == 0 || mid_id == prim_count)
+        mid_id = prim_count / 2;
+
+    node->split_axis = dim;
+    node->children[0] = build_BVH_rec(prims, mid_id, ordered_verts);
+    node->children[1] = build_BVH_rec(prims + mid_id, prim_count - mid_id, ordered_verts);
+    return node;
+}
+
+BVHNode* build_BVH(Vertex* verts, int vert_count)
+{
+    std::vector<BVHPrim> prims;
+    prims.reserve(vert_count / 3);
+
+    for(int base = 0; base < vert_count; base += 3)
+    {
+        BVHPrim prim;
+        prim.verts[0] = verts[base+0];
+        prim.verts[1] = verts[base+1];
+        prim.verts[2] = verts[base+2];
+        prim.bbox = compute_bbox(verts + base, 3);
+        prim.centroid = 0.5 * prim.bbox.min + 0.5 * prim.bbox.max;
+        prims.push_back(prim);
+    }
+    std::vector<Vertex> ordered_verts;
+    ordered_verts.reserve(vert_count);
+    BVHNode* root = build_BVH_rec(prims.data(), prims.size(), ordered_verts);
+    memcpy(verts, ordered_verts.data(), vert_count * sizeof(Vertex));
+    return root;
+}
 
 Mesh load_mesh(const char* filename)
 {
@@ -169,6 +339,8 @@ Mesh load_mesh(const char* filename)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)sizeof(vec3));
+
+    mesh.bvh_root = build_BVH(mesh.vertices, mesh.vertex_count);
     return mesh;
 }
 
@@ -214,7 +386,7 @@ vec3 transform3(mat4 m, vec3 v)
 
 // does not handle a parallel case
 
-float plane_ray_test(vec3 plane_normal, vec3 plane_pos, vec3 ray_start, vec3 ray_dir)
+float intersect_plane(vec3 ray_start, vec3 ray_dir, vec3 plane_normal, vec3 plane_pos)
 {
     float t = dot(plane_normal, plane_pos - ray_start) / dot(plane_normal, ray_dir);
     return t;
@@ -330,7 +502,7 @@ void nav_process_event(Nav& nav, SDL_Event& e)
             {
                 vec3 ray_start, ray_dir;
                 nav_get_cursor_ray(nav, cursors[i], ray_start, ray_dir);
-                float t = plane_ray_test(normal, nav.center, ray_start, ray_dir);
+                float t = intersect_plane(ray_start, ray_dir, normal, nav.center);
                 assert(t > 0);
                 points[i] = ray_start + t*ray_dir;
             }
@@ -453,6 +625,116 @@ void nav_process_event(Nav& nav, SDL_Event& e)
     } // switch
 }
 
+bool intersect_AABB(vec3 ray_start, vec3 ray_dir, BBox bbox, float& t)
+{
+    vec3 inv_dir = {1 / ray_dir.x, 1 / ray_dir.y, 1 / ray_dir.z};
+    float tmin = FLT_MIN;
+    float tmax = FLT_MAX;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        float t1 = (bbox.min[i] - ray_start[i]) * inv_dir[i];
+        float t2 = (bbox.max[i] - ray_start[i]) * inv_dir[i];
+
+        if(t1 > t2)
+        {
+            float tmp = t2;
+            t2 = t1;
+            t1 = tmp;
+        }
+        tmin = max(tmin, t1);
+        tmax = min(tmax, t2);
+
+        if(tmin > tmax)
+            return false;
+        if(tmax < 0)
+            return false;
+    }
+    t = tmin > 0 ? tmin : tmax;
+    return true;
+}
+
+// returns t ray paremter, t is negative on a miss
+
+float intersect_triangle(vec3 ray_start, vec3 ray_dir, Vertex* verts)
+{
+    vec3 coords[3] = {verts[0].pos, verts[1].pos, verts[2].pos};
+    vec3 edge01 = coords[1] - coords[0];
+    vec3 edge12 = coords[2] - coords[1];
+    vec3 edge20 = coords[0] - coords[2];
+    vec3 normal = cross(edge01, edge12);
+    float area = length(normal);
+    normal = (1 / area) * normal; // normalize
+    float t = intersect_plane(ray_start, ray_dir, normal, coords[0]);
+
+    if(t < 0)
+        return t;
+    vec3 p = ray_start + (t * ray_dir);
+    float b0 = dot(normal, cross(edge12, p - coords[1])) / area;
+    float b1 = dot(normal, cross(edge20, p - coords[2])) / area;
+    float b2 = dot(normal, cross(edge01, p - coords[0])) / area;
+
+    if(b0 < 0 || b1 < 0 || b2 < 0)
+        return -1;
+    return t;
+}
+
+// t is negative on a miss
+
+float intersect_object(vec3 ray_start, vec3 ray_dir, Object& object, int& vert_id)
+{
+    vec3 inv_scale = {1/object.scale.x, 1/object.scale.y, 1/object.scale.z};
+    mat4 obj_f_world = scale(inv_scale) * transpose(object.rotation) * translate(-object.position);
+    ray_start = transform3(obj_f_world, ray_start);
+    ray_dir = mat4_to_mat3(obj_f_world) * ray_dir;
+    int is_dir_neg[3] = {ray_dir.x < 0, ray_dir.y < 0, ray_dir.z < 0};
+    vert_id = -1;
+    float t_min = -1;
+    std::vector<BVHNode*> nodes_to_visit;
+    nodes_to_visit.push_back(object.mesh->bvh_root);
+
+    while(nodes_to_visit.size())
+    {
+        BVHNode* node = nodes_to_visit.back();
+        nodes_to_visit.pop_back();
+        float t;
+        bool hit = intersect_AABB(ray_start, ray_dir, node->bbox, t);
+
+        if(!hit)
+            continue;
+        if(vert_id != -1 && t > t_min)
+            continue;
+
+        if(!node->vert_count)
+        {
+            if(is_dir_neg[node->split_axis])
+            {
+                nodes_to_visit.push_back(node->children[0]);
+                nodes_to_visit.push_back(node->children[1]);
+            }
+            else
+            {
+                nodes_to_visit.push_back(node->children[1]);
+                nodes_to_visit.push_back(node->children[0]);
+            }
+            continue;
+        }
+        int end = node->vert_offset + node->vert_count;
+
+        for(int base = node->vert_offset; base < end; base += 3)
+        {
+            float t = intersect_triangle(ray_start, ray_dir, object.mesh->vertices + base);
+
+            if(t >= 0 && (vert_id == -1 || t <= t_min))
+            {
+                vert_id = base;
+                t_min = t;
+            }
+        }
+    }
+    return t_min;
+}
+
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -497,6 +779,7 @@ int main()
 
     bool quit = false;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
+    bool selected = false;
 
     while(!quit)
     {
@@ -517,6 +800,14 @@ int main()
                     break;
                 }
             }
+            else if(event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
+            {
+                vec3 ray_start, ray_dir;
+                nav_get_cursor_ray(nav, nav.cursor_win, ray_start, ray_dir);
+                int vert_id;
+                float t = intersect_object(ray_start, ray_dir, objects[0], vert_id);
+                selected = t >= 0;
+            }
         }
         Uint64 current_counter = SDL_GetPerformanceCounter();
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
@@ -536,6 +827,9 @@ int main()
             vec3 light_dir = normalize(nav.eye_pos - nav.center);
             vec3 diffuse_color = {0.2, 0.2, 0.2};
             vec3 specular_color = {0.8, 0.8, 0.8};
+
+            if(selected)
+                diffuse_color = {0,0.5,0};
 
             GLint proj_loc = glGetUniformLocation(prog, "proj");
             GLint view_loc = glGetUniformLocation(prog, "view");
