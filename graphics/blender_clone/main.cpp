@@ -359,24 +359,6 @@ GLuint create_program(const char* vert, const char* frag)
     return program;
 }
 
-void draw_segment(GLuint prog, vec3 v1, vec3 v2, vec3 color)
-{
-    vec3 vertices[] = {v1, v2};
-    GLuint vao, vbo;
-    glGenBuffers(1, &vbo);
-    glGenVertexArrays(1, &vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glBindVertexArray(vao);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
-    GLint color_loc = glGetUniformLocation(prog, "color");
-    glUniform3f(color_loc, color.x, color.y, color.z);
-    glDrawArrays(GL_LINES, 0, 2);
-    glDeleteBuffers(1, &vbo);
-    glDeleteVertexArrays(1, &vao);
-}
-
 vec3 transform3(mat4 m, vec3 v)
 {
     vec4 h = {v.x, v.y, v.z, 1};
@@ -735,6 +717,24 @@ float intersect_object(vec3 ray_start, vec3 ray_dir, Object& object, int& vert_i
     return t_min;
 }
 
+void draw_segment(GLuint prog, vec3 v1, vec3 v2, vec3 color)
+{
+    vec3 vertices[] = {v1, v2};
+    GLuint vao, vbo;
+    glGenBuffers(1, &vbo);
+    glGenVertexArrays(1, &vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindVertexArray(vao);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    GLint color_loc = glGetUniformLocation(prog, "color");
+    glUniform3f(color_loc, color.x, color.y, color.z);
+    glDrawArrays(GL_LINES, 0, 2);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+}
+
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -762,12 +762,12 @@ int main()
     meshes.push_back(load_mesh("../model.obj"));
     std::vector<Object> objects;
     {
-        Object o;
-        o.mesh = &meshes[1];
-        o.position = {0,0,0};
-        o.rotation = rotate_x(0);
-        o.scale = {1,1,1};
-        objects.push_back(o);
+        Object obj;
+        obj.mesh = &meshes[1];
+        obj.position = {0,0,0};
+        obj.rotation = rotate_x(0);
+        obj.scale = {1,1,1};
+        objects.push_back(obj);
     }
 
     Nav nav;
@@ -778,8 +778,9 @@ int main()
     }
 
     bool quit = false;
+    Object* selected = nullptr;
+    int vert_id;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
-    bool selected = false;
 
     while(!quit)
     {
@@ -802,11 +803,23 @@ int main()
             }
             else if(event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
             {
+                selected = nullptr;
+                float t_min = FLT_MAX;
                 vec3 ray_start, ray_dir;
                 nav_get_cursor_ray(nav, nav.cursor_win, ray_start, ray_dir);
-                int vert_id;
-                float t = intersect_object(ray_start, ray_dir, objects[0], vert_id);
-                selected = t >= 0;
+
+                for(Object& obj: objects)
+                {
+                    int vid;
+                    float t = intersect_object(ray_start, ray_dir, obj, vid);
+
+                    if(t >= 0 && t < t_min)
+                    {
+                        selected = &obj;
+                        t_min = t;
+                        vert_id = vid;
+                    }
+                }
             }
         }
         Uint64 current_counter = SDL_GetPerformanceCounter();
@@ -825,19 +838,13 @@ int main()
         {
             vec3 light_intensity = {1,1,1};
             vec3 light_dir = normalize(nav.eye_pos - nav.center);
-            vec3 diffuse_color = {0.2, 0.2, 0.2};
-            vec3 specular_color = {0.8, 0.8, 0.8};
-
-            if(selected)
-                diffuse_color = {0,0.5,0};
-
+            vec3 specular_color = {0.2, 0.2, 0.2};
             GLint proj_loc = glGetUniformLocation(prog, "proj");
             GLint view_loc = glGetUniformLocation(prog, "view");
             GLint light_int_loc = glGetUniformLocation(prog, "light_intensity");
             GLint light_dir_loc = glGetUniformLocation(prog, "light_dir");
             GLint ambient_int_loc = glGetUniformLocation(prog, "ambient_intensity");
             GLint eye_pos_loc = glGetUniformLocation(prog, "eye_pos");
-            GLint diffuse_color_loc = glGetUniformLocation(prog, "diffuse_color");
             GLint specular_color_loc = glGetUniformLocation(prog, "specular_color");
             GLint specular_exp_loc = glGetUniformLocation(prog, "specular_exp");
 
@@ -847,31 +854,59 @@ int main()
             glUniform3fv(light_dir_loc, 1, &light_dir.x);
             glUniform1f(ambient_int_loc, 0.01);
             glUniform3fv(eye_pos_loc, 1, &nav.eye_pos.x);
-            glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
             glUniform3fv(specular_color_loc, 1, &specular_color.x);
             glUniform1f(specular_exp_loc, 50);
         }
 
-        for(Object& o: objects)
+        for(Object& obj: objects)
         {
-            mat4 model = translate(o.position) * o.rotation * scale(o.scale);
+            GLint diffuse_color_loc = glGetUniformLocation(prog, "diffuse_color");
             GLint model_loc = glGetUniformLocation(prog, "model");
+            vec3 diffuse_color = selected == &obj ? vec3{0.6, 0.15, 0} : vec3{0.2, 0.2, 0.2};
+            mat4 model = translate(obj.position) * obj.rotation * scale(obj.scale);
+            glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
-            glBindVertexArray(o.mesh->vao);
-            glDrawArrays(GL_TRIANGLES, 0, o.mesh->vertex_count);
+            glBindVertexArray(obj.mesh->vao);
+            glDrawArrays(GL_TRIANGLES, 0, obj.mesh->vertex_count);
+        }
+
+        // solid color
+
+        glUseProgram(prog_solid);
+        {
+            GLint proj_loc = glGetUniformLocation(prog_solid, "proj");
+            GLint view_loc = glGetUniformLocation(prog_solid, "view");
+            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, nav.proj.data);
+            glUniformMatrix4fv(view_loc, 1, GL_TRUE, nav.view.data);
+        }
+
+        // selected face
+
+        if(selected)
+        {
+            Object& obj = *selected;
+            Vertex* verts = obj.mesh->vertices + vert_id;
+            vec3 coords[] = {verts[0].pos, verts[1].pos, verts[2].pos};
+            vec3 normal = normalize(cross(coords[1] - coords[0], coords[2] - coords[0]));
+
+            for(vec3& coord: coords)
+                coord = coord + 0.001 * normal;
+
+            mat4 model = translate(obj.position) * obj.rotation * scale(obj.scale);
+            GLint model_loc = glGetUniformLocation(prog_solid, "model");
+            glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
+            vec3 color = {0,1,0};
+            draw_segment(prog_solid, coords[0], coords[1], color);
+            draw_segment(prog_solid, coords[1], coords[2], color);
+            draw_segment(prog_solid, coords[2], coords[0], color);
         }
 
         // axes
 
         glDepthMask(GL_FALSE);
-        glUseProgram(prog_solid);
         {
             mat4 model = identity4();
-            GLint proj_loc = glGetUniformLocation(prog_solid, "proj");
-            GLint view_loc = glGetUniformLocation(prog_solid, "view");
             GLint model_loc = glGetUniformLocation(prog_solid, "model");
-            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, nav.proj.data);
-            glUniformMatrix4fv(view_loc, 1, GL_TRUE, nav.view.data);
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
         }
         float d = 10000.f;
