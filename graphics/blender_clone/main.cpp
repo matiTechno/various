@@ -761,7 +761,7 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor_win1, vec
 
     for(int i = 0; i < 3; ++i)
     {
-        if(ctrl.axes_active & (1 << i))
+        if(ctrl.axes_active & (1<<i))
         {
             axes[axis_count] = basis[i];
             axis_count += 1;
@@ -809,7 +809,7 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor_win1, vec
     obj.pos = obj.pos + diff;
 }
 
-void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
+void control_process_event(Control& ctrl, Nav& nav, Object* obj, SDL_Event& e)
 {
     switch(e.type)
     {
@@ -832,6 +832,8 @@ void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
         case SDLK_r:
         case SDLK_g:
         {
+            if(!obj)
+                break;
             ControlMode new_mode = CTRL_SCALE;
 
             if(e.key.keysym.sym == SDLK_r)
@@ -848,19 +850,18 @@ void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
                 ctrl.axes_active = 7;
                 ctrl.axes_local = false;
                 ctrl.axis_prev_sel = 0;
-                ctrl.cursor_win = nav.cursor_win;
-                ctrl.cursor_win_init = nav.cursor_win;
-                ctrl.scale_init = obj.scale;
-                ctrl.rot_init = obj.rot;
-                ctrl.pos_init = obj.pos;
+                ctrl.cursor_win_init = ctrl.cursor_win;
+                ctrl.scale_init = obj->scale;
+                ctrl.rot_init = obj->rot;
+                ctrl.pos_init = obj->pos;
             }
             else
             {
                 ctrl.mode = new_mode;
-                obj.scale = ctrl.scale_init;
-                obj.rot = ctrl.rot_init;
-                obj.pos = ctrl.pos_init;
-                apply_transform(ctrl, nav, obj, ctrl.cursor_win_init, ctrl.cursor_win);
+                obj->scale = ctrl.scale_init;
+                obj->rot = ctrl.rot_init;
+                obj->pos = ctrl.pos_init;
+                apply_transform(ctrl, nav, *obj, ctrl.cursor_win_init, ctrl.cursor_win);
             }
             break;
         }
@@ -899,10 +900,10 @@ void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
                     ctrl.axes_local = true;
                 }
             }
-            obj.scale = ctrl.scale_init;
-            obj.rot = ctrl.rot_init;
-            obj.pos = ctrl.pos_init;
-            apply_transform(ctrl, nav, obj, ctrl.cursor_win_init, ctrl.cursor_win);
+            obj->scale = ctrl.scale_init;
+            obj->rot = ctrl.rot_init;
+            obj->pos = ctrl.pos_init;
+            apply_transform(ctrl, nav, *obj, ctrl.cursor_win_init, ctrl.cursor_win);
             break;
         }
         }
@@ -916,10 +917,10 @@ void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
     }
     case SDL_MOUSEMOTION:
     {
-        if(!ctrl.mode)
-            break;
         vec2 cursor_win = {(float)e.motion.x, (float)e.motion.y};
-        apply_transform(ctrl, nav, obj, ctrl.cursor_win, cursor_win);
+
+        if(ctrl.mode)
+            apply_transform(ctrl, nav, *obj, ctrl.cursor_win, cursor_win);
         ctrl.cursor_win = cursor_win;
         break;
     }
@@ -933,9 +934,9 @@ void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
         else if(e.button.button == SDL_BUTTON_RIGHT)
         {
             ctrl.mode = CTRL_IDLE;
-            obj.scale = ctrl.scale_init;
-            obj.rot = ctrl.rot_init;
-            obj.pos = ctrl.pos_init;
+            obj->scale = ctrl.scale_init;
+            obj->rot = ctrl.rot_init;
+            obj->pos = ctrl.pos_init;
         }
         break;
     }
@@ -1022,11 +1023,14 @@ int main()
             bool ctrl_active = control.mode;
             bool nav_active = nav.mmb_down || nav.mmb_shift_down;
 
+            if(ctrl_active)
+                assert(selected);
+
             if(!ctrl_active)
                 nav_process_event(nav, event);
 
-            if(!nav_active && selected)
-                control_process_event(control, nav, *selected, event);
+            if(!nav_active)
+                control_process_event(control, nav, selected, event);
 
             if(!ctrl_active && event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
             {
@@ -1149,6 +1153,27 @@ int main()
         draw_segment(prog_solid, vec3{0,-d,0}, vec3{0,d,0}, vec3{0,0.3,0});
         draw_segment(prog_solid, vec3{0,0,-d}, vec3{0,0,d}, vec3{0,0,0.3});
         glDepthMask(GL_TRUE);
+
+        if(control.mode && control.axes_active != 7)
+        {
+            vec3 basis[3] = {{1,0,0},{0,1,0},{0,0,1}};
+
+            for(int i = 0; i < 3; ++i)
+            {
+                if(!(control.axes_active & (1<<i)))
+                    continue;
+                vec3 axis = basis[i];
+
+                if(control.axes_local)
+                    axis = mat4_to_mat3(selected->rot) * axis;
+
+                vec3 p1 = selected->pos + d * axis;
+                vec3 p2 = selected->pos - d * axis;
+                vec3 color = {0.3,0.3,0.3};
+                color[i] = 1;
+                draw_segment(prog_solid, p1, p2, color);
+            }
+        }
 
         SDL_GL_SwapWindow(window);
     }
