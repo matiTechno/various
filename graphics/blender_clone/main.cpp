@@ -566,8 +566,8 @@ void nav_process_event(Nav& nav, SDL_Event& e)
             rebuild_proj_matrix(nav);
             break;
         case SDLK_x:
-            new_dir = {1,0,0};
-            new_x = {0,0,1};
+            new_dir = {-1,0,0};
+            new_x = {0,0,-1};
             flip_x = true;
             break;
         case SDLK_y:
@@ -744,6 +744,7 @@ struct Control
     vec3 scale_init;
     mat4 rot_init;
     vec3 pos_init;
+    vec3 vis_torque_point;
 };
 
 void control_init(Control& ctrl)
@@ -753,11 +754,17 @@ void control_init(Control& ctrl)
     ctrl.shift_down = false;
 }
 
-void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor_win1, vec2 cursor_win2)
+void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
 {
     int axis_count = 0;
     vec3 axes[3];
     vec3 basis[3] = {{1,0,0},{0,1,0},{0,0,1}};
+
+    if(ctrl.axes_local)
+    {
+        for(int i = 0; i < 3; ++i)
+            basis[i] = transform3(obj.rot, basis[i]);
+    }
 
     for(int i = 0; i < 3; ++i)
     {
@@ -767,31 +774,38 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor_win1, vec
             axis_count += 1;
         }
     }
+    vec3 dir_to_eye = normalize(nav.eye_pos - nav.center);
     vec3 plane_normal;
+    vec3 rot_axis;
 
     switch(axis_count)
     {
     case 1:
     {
-        vec3 dir_to_eye = normalize(nav.eye_pos - obj.pos);
         vec3 v = normalize(cross(dir_to_eye, axes[0]));
         plane_normal = cross(axes[0], v);
+        rot_axis = axes[0];
         break;
     }
     case 2:
         plane_normal = cross(axes[0], axes[1]);
+        rot_axis = plane_normal;
+
+        if( (ctrl.axes_active & 5) == 5) // negate cross(x,z) to follow a right-handed orientation
+            rot_axis = -rot_axis;
         break;
     case 3:
-        plane_normal = normalize(nav.eye_pos - obj.pos);
+        plane_normal = dir_to_eye;
+        rot_axis = dir_to_eye;
         break;
     default:
         assert(false);
     }
 
-    if(ctrl.axes_local)
-        plane_normal = mat4_to_mat3(obj.rot) * plane_normal;
+    if(dot(rot_axis, dir_to_eye) < 0)
+        rot_axis = -rot_axis;
 
-    vec2 cursors[2] = {cursor_win1, cursor_win2};
+    vec2 cursors[2] = {ctrl.cursor_win_init, cursor2_win};
     vec3 points[2];
 
     for(int i = 0; i < 2; ++i)
@@ -801,12 +815,71 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor_win1, vec
         float t = intersect_plane(ray_start, ray_dir, plane_normal, obj.pos);
         points[i] = ray_start + (t * ray_dir);
     }
-    vec3 diff = points[1] - points[0];
+    vec3 origin = ctrl.pivot == PIVOT_MESH_ORIGIN ? obj.pos : vec3{0,0,0};
 
-    if(axis_count == 1)
-        diff = dot(axes[0], diff) * axes[0];
+    switch(ctrl.mode)
+    {
+    case CTRL_TRANSLATE:
+    {
+        vec3 diff = points[1] - points[0];
 
-    obj.pos = obj.pos + diff;
+        if(axis_count == 1)
+            diff = dot(axes[0], diff) * axes[0];
+
+        obj.pos = ctrl.pos_init + diff;
+        break;
+    }
+    case CTRL_SCALE:
+    {
+        vec3 lim_normal = normalize(points[0] - origin);
+        float sign = ( dot(lim_normal, points[1]) - dot(lim_normal, origin) ) < 0 ? -1 : 1;
+
+        float d0 = length(points[0] - origin);
+        float d1 = length(points[1] - origin);
+        vec3 add_scale;
+
+        for(int i = 0; i < 3; ++i)
+            add_scale[i] = (ctrl.axes_active & (1<<i)) ? sign * d1/d0 : 1;
+
+        obj.scale = mul_cwise(ctrl.scale_init, add_scale);
+        break;
+    }
+    case CTRL_ROTATE:
+    {
+        mat4 clip_f_world = nav.proj * nav.view;
+        vec4 origin_clip = clip_f_world * vec4{origin.x, origin.y, origin.z, 1};
+        vec2 origin_ndc = (1 / origin_clip.w) * vec2{origin_clip.x, origin_clip.y};
+        cursors[0] = ctrl.cursor_win;
+        vec2 cursors_ndc[2];
+
+        for(int i = 0; i < 2; ++i)
+        {
+            cursors_ndc[i].x = ( 2 / nav.win_size.x) * cursors[i].x - 1;
+            cursors_ndc[i].y = (-2 / nav.win_size.y) * cursors[i].y + 1;
+        }
+        vec2 v1 = cursors_ndc[0] - origin_ndc;
+        vec2 v2 = cursors_ndc[1] - origin_ndc;
+        float a1 = atan2f(v1.y, v1.x);
+        float a2 = atan2f(v2.y, v2.x);
+        float da = a2 - a1;
+        mat4 add_rot = rotate_axis(rot_axis, da);
+        obj.rot = add_rot * obj.rot;
+
+        if(ctrl.pivot == PIVOT_WORLD_ORIGIN)
+            obj.pos = transform3(add_rot, obj.pos);
+        break;
+    }
+    default:
+        assert(false);
+    }
+
+    // vis_torque_point = cursors[1] fails if the intersected plane is parallel to a ray, this is a fix
+    {
+        vec3 ray_start, ray_dir;
+        nav_get_cursor_ray(nav, cursor2_win, ray_start, ray_dir);
+        float t = intersect_plane(ray_start, ray_dir, dir_to_eye, nav.center);
+        ctrl.vis_torque_point = ray_start + (t * ray_dir);
+    }
 }
 
 void control_process_event(Control& ctrl, Nav& nav, Object* obj, SDL_Event& e)
@@ -822,7 +895,7 @@ void control_process_event(Control& ctrl, Nav& nav, Object* obj, SDL_Event& e)
             ctrl.shift_down = true;
             break;
         }
-        case SDLK_p:
+        case SDLK_o:
         {
             if(!ctrl.mode)
                 ctrl.pivot = ctrl.pivot == PIVOT_MESH_ORIGIN ? PIVOT_WORLD_ORIGIN : PIVOT_MESH_ORIGIN;
@@ -858,11 +931,12 @@ void control_process_event(Control& ctrl, Nav& nav, Object* obj, SDL_Event& e)
             else
             {
                 ctrl.mode = new_mode;
+                ctrl.cursor_win_init = ctrl.cursor_win;
                 obj->scale = ctrl.scale_init;
                 obj->rot = ctrl.rot_init;
                 obj->pos = ctrl.pos_init;
-                apply_transform(ctrl, nav, *obj, ctrl.cursor_win_init, ctrl.cursor_win);
             }
+            apply_transform(ctrl, nav, *obj, ctrl.cursor_win);
             break;
         }
         case SDLK_x:
@@ -903,7 +977,17 @@ void control_process_event(Control& ctrl, Nav& nav, Object* obj, SDL_Event& e)
             obj->scale = ctrl.scale_init;
             obj->rot = ctrl.rot_init;
             obj->pos = ctrl.pos_init;
-            apply_transform(ctrl, nav, *obj, ctrl.cursor_win_init, ctrl.cursor_win);
+            apply_transform(ctrl, nav, *obj, ctrl.cursor_win);
+            break;
+        }
+        case SDLK_ESCAPE:
+        {
+            if(!ctrl.mode)
+                break;
+            ctrl.mode = CTRL_IDLE;
+            obj->scale = ctrl.scale_init;
+            obj->rot = ctrl.rot_init;
+            obj->pos = ctrl.pos_init;
             break;
         }
         }
@@ -920,7 +1004,7 @@ void control_process_event(Control& ctrl, Nav& nav, Object* obj, SDL_Event& e)
         vec2 cursor_win = {(float)e.motion.x, (float)e.motion.y};
 
         if(ctrl.mode)
-            apply_transform(ctrl, nav, *obj, ctrl.cursor_win, cursor_win);
+            apply_transform(ctrl, nav, *obj, cursor_win);
         ctrl.cursor_win = cursor_win;
         break;
     }
@@ -977,9 +1061,6 @@ int main()
     if(!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
         assert(false);
 
-    glEnable(GL_CULL_FACE);
-    glEnable(GL_DEPTH_TEST);
-
     GLuint prog = create_program(_vert, _frag);
     GLuint prog_solid = create_program(_vert_solid, _frag_solid);
 
@@ -1017,14 +1098,17 @@ int main()
 
         while(SDL_PollEvent(&event))
         {
-            if(event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE))
-                quit = true;
-
             bool ctrl_active = control.mode;
             bool nav_active = nav.mmb_down || nav.mmb_shift_down;
 
             if(ctrl_active)
                 assert(selected);
+
+            if(event.type == SDL_QUIT)
+                quit = true;
+
+            if(!ctrl_active && event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
+                quit = true;
 
             if(!ctrl_active)
                 nav_process_event(nav, event);
@@ -1062,9 +1146,11 @@ int main()
         SDL_GetWindowSize(window, &width, &height);
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_CULL_FACE);
 
         // objects
 
+        glEnable(GL_DEPTH_TEST);
         glUseProgram(prog);
         {
             vec3 light_intensity = {1,1,1};
@@ -1106,6 +1192,12 @@ int main()
             glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
             glBindVertexArray(obj.mesh->vao);
+
+            if(obj.scale.x * obj.scale.y * obj.scale.z < 0)
+                glCullFace(GL_FRONT);
+            else
+                glCullFace(GL_BACK);
+
             glDrawArrays(GL_TRIANGLES, 0, obj.mesh->vertex_count);
         }
 
@@ -1141,18 +1233,23 @@ int main()
         }
 
         // axes
-
-        glDepthMask(GL_FALSE);
         {
             mat4 model = identity4();
             GLint model_loc = glGetUniformLocation(prog_solid, "model");
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
         }
-        float d = 10000.f;
+        float d = 250.f;
         draw_segment(prog_solid, vec3{-d,0,0}, vec3{d,0,0}, vec3{0.3,0,0});
-        draw_segment(prog_solid, vec3{0,-d,0}, vec3{0,d,0}, vec3{0,0.3,0});
-        draw_segment(prog_solid, vec3{0,0,-d}, vec3{0,0,d}, vec3{0,0,0.3});
-        glDepthMask(GL_TRUE);
+        draw_segment(prog_solid, vec3{0,0,-d}, vec3{0,0,d}, vec3{0.01,0.01,0.3});
+        // xz plane
+        vec3 color_xz = {0.05,0.05,0.05};
+        draw_segment(prog_solid, vec3{d,0,d},  vec3{-d,0,d},  color_xz);
+        draw_segment(prog_solid, vec3{d,0,-d}, vec3{-d,0,-d}, color_xz);
+        draw_segment(prog_solid, vec3{d,0,d},  vec3{d,0,-d},  color_xz);
+        draw_segment(prog_solid, vec3{-d,0,d}, vec3{-d,0,-d}, color_xz);
+
+        glDisable(GL_DEPTH_TEST);
+        vec3 origin = control.pivot == PIVOT_MESH_ORIGIN ? control.pos_init : vec3{0,0,0};
 
         if(control.mode && control.axes_active != 7)
         {
@@ -1167,13 +1264,16 @@ int main()
                 if(control.axes_local)
                     axis = mat4_to_mat3(selected->rot) * axis;
 
-                vec3 p1 = selected->pos + d * axis;
-                vec3 p2 = selected->pos - d * axis;
+                vec3 p1 = origin + d * axis;
+                vec3 p2 = origin - d * axis;
                 vec3 color = {0.3,0.3,0.3};
                 color[i] = 1;
                 draw_segment(prog_solid, p1, p2, color);
             }
         }
+
+        if(control.mode == CTRL_ROTATE || control.mode == CTRL_SCALE)
+            draw_segment(prog_solid, origin, control.vis_torque_point, vec3{1,1,1});
 
         SDL_GL_SwapWindow(window);
     }
