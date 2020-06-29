@@ -760,17 +760,11 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
     vec3 axes[3];
     vec3 basis[3] = {{1,0,0},{0,1,0},{0,0,1}};
 
-    if(ctrl.axes_local)
-    {
-        for(int i = 0; i < 3; ++i)
-            basis[i] = transform3(obj.rot, basis[i]);
-    }
-
     for(int i = 0; i < 3; ++i)
     {
         if(ctrl.axes_active & (1<<i))
         {
-            axes[axis_count] = basis[i];
+            axes[axis_count] = ctrl.axes_local ? transform3(ctrl.rot_init, basis[i]) : basis[i];
             axis_count += 1;
         }
     }
@@ -872,7 +866,6 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
     default:
         assert(false);
     }
-
     // vis_torque_point = cursors[1] fails if the intersected plane is parallel to a ray, this is a fix
     {
         vec3 ray_start, ray_dir;
@@ -1068,14 +1061,7 @@ int main()
     meshes.push_back(load_mesh("cube.obj"));
     meshes.push_back(load_mesh("../model.obj"));
     std::vector<Object> objects;
-    {
-        Object obj;
-        obj.mesh = &meshes[1];
-        obj.pos = vec3{0,0,0};
-        obj.rot = identity4();
-        obj.scale = vec3{1,1,1};
-        objects.push_back(obj);
-    }
+    objects.push_back({}); // dummy object to reserve 0 index
 
     Control control;
     control_init(control);
@@ -1084,12 +1070,12 @@ int main()
     {
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
-        nav_init(nav, vec3{0.5, 0.5, 2.f}, width, height, 60, 0.1, 1000);
+        nav_init(nav, vec3{2,2,8}, width, height, 60, 0.1, 1000);
     }
 
     bool quit = false;
-    Object* selected = nullptr;
-    int selected_vert_id;
+    std::size_t sel_id = 0;
+    int sel_vert_id = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
     while(!quit)
@@ -1102,37 +1088,72 @@ int main()
             bool nav_active = nav.mmb_down || nav.mmb_shift_down;
 
             if(ctrl_active)
-                assert(selected);
+                assert(sel_id);
 
             if(event.type == SDL_QUIT)
                 quit = true;
 
-            if(!ctrl_active && event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
-                quit = true;
+            if(!ctrl_active && !nav_active && event.type == SDL_KEYDOWN)
+            {
+                Mesh* spawn_mesh = nullptr;
+
+                switch(event.key.keysym.sym)
+                {
+                case SDLK_ESCAPE:
+                    quit = true;
+                    break;
+                case SDLK_1:
+                    spawn_mesh = &meshes[0];
+                    break;
+                case SDLK_2:
+                    spawn_mesh = &meshes[1];
+                    break;
+                case SDLK_DELETE:
+                    if(!sel_id)
+                        break;
+                    objects.erase(objects.begin() + sel_id);
+                    sel_id = 0;
+                    break;
+                }
+                if(spawn_mesh)
+                {
+                    Object obj;
+                    obj.mesh = spawn_mesh;
+                    obj.pos = vec3{0,0,0};
+                    obj.rot = identity4();
+                    obj.scale = vec3{1,1,1};
+                    sel_id = objects.size();
+                    sel_vert_id = 0;
+                    objects.push_back(obj);
+                }
+            }
 
             if(!ctrl_active)
                 nav_process_event(nav, event);
 
             if(!nav_active)
-                control_process_event(control, nav, selected, event);
+            {
+                Object* obj = sel_id ? &objects[sel_id] : nullptr;
+                control_process_event(control, nav, obj, event);
+            }
 
             if(!ctrl_active && event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
             {
-                selected = nullptr;
+                sel_id = 0;
                 float t_min = FLT_MAX;
                 vec3 ray_start, ray_dir;
                 nav_get_cursor_ray(nav, nav.cursor_win, ray_start, ray_dir);
 
-                for(Object& obj: objects)
+                for(std::size_t i = 1; i < objects.size(); ++i)
                 {
                     int vid;
-                    float t = intersect_object(ray_start, ray_dir, obj, vid);
+                    float t = intersect_object(ray_start, ray_dir, objects[i], vid);
 
                     if(t >= 0 && t < t_min)
                     {
-                        selected = &obj;
+                        sel_id = i;
                         t_min = t;
-                        selected_vert_id = vid;
+                        sel_vert_id = vid;
                     }
                 }
             }
@@ -1175,13 +1196,14 @@ int main()
             glUniform1f(specular_exp_loc, 50);
         }
 
-        for(Object& obj: objects)
+        for(std::size_t i = 1; i < objects.size(); ++i)
         {
+            Object& obj = objects[i];
             GLint diffuse_color_loc = glGetUniformLocation(prog, "diffuse_color");
             GLint model_loc = glGetUniformLocation(prog, "model");
             vec3 diffuse_color = vec3{0.3, 0.3, 0.3};
 
-            if(selected == &obj)
+            if(i == sel_id)
             {
                 if(!control.mode)
                     diffuse_color = vec3{0.6, 0.3, 0};
@@ -1213,10 +1235,10 @@ int main()
 
         // selected face
 
-        if(selected)
+        if(sel_id)
         {
-            Object& obj = *selected;
-            Vertex* verts = obj.mesh->vertices + selected_vert_id;
+            Object& obj = objects[sel_id];
+            Vertex* verts = obj.mesh->vertices + sel_vert_id;
             vec3 coords[] = {verts[0].pos, verts[1].pos, verts[2].pos};
             vec3 normal = normalize(cross(coords[1] - coords[0], coords[2] - coords[0]));
 
@@ -1262,7 +1284,7 @@ int main()
                 vec3 axis = basis[i];
 
                 if(control.axes_local)
-                    axis = mat4_to_mat3(selected->rot) * axis;
+                    axis = mat4_to_mat3(control.rot_init) * axis;
 
                 vec3 p1 = origin + d * axis;
                 vec3 p2 = origin - d * axis;
