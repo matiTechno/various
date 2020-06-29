@@ -27,7 +27,7 @@ void main()
     vec4 pos_w = model * vec4(pos, 1);
     gl_Position = proj * view * pos_w;
     frag_pos = vec3(pos_w);
-    frag_normal = mat3(model) * normal; // inverse transpose
+    frag_normal = inverse( transpose(mat3(model)) ) * normal;
 }
 )";
 
@@ -125,8 +125,8 @@ struct Mesh
 struct Object
 {
     Mesh* mesh;
-    vec3 position;
-    mat4 rotation;
+    vec3 pos;
+    mat4 rot;
     vec3 scale;
 };
 
@@ -663,17 +663,17 @@ float intersect_triangle(vec3 ray_start, vec3 ray_dir, Vertex* verts)
 
 // t is negative on a miss
 
-float intersect_object(vec3 ray_start, vec3 ray_dir, Object& object, int& vert_id)
+float intersect_object(vec3 ray_start, vec3 ray_dir, Object& obj, int& vert_id)
 {
-    vec3 inv_scale = {1/object.scale.x, 1/object.scale.y, 1/object.scale.z};
-    mat4 obj_f_world = scale(inv_scale) * transpose(object.rotation) * translate(-object.position);
+    vec3 inv_scale = {1/obj.scale.x, 1/obj.scale.y, 1/obj.scale.z};
+    mat4 obj_f_world = scale(inv_scale) * transpose(obj.rot) * translate(-obj.pos);
     ray_start = transform3(obj_f_world, ray_start);
     ray_dir = mat4_to_mat3(obj_f_world) * ray_dir;
     int is_dir_neg[3] = {ray_dir.x < 0, ray_dir.y < 0, ray_dir.z < 0};
     vert_id = -1;
     float t_min = -1;
     std::vector<BVHNode*> nodes_to_visit;
-    nodes_to_visit.push_back(object.mesh->bvh_root);
+    nodes_to_visit.push_back(obj.mesh->bvh_root);
 
     while(nodes_to_visit.size())
     {
@@ -705,7 +705,7 @@ float intersect_object(vec3 ray_start, vec3 ray_dir, Object& object, int& vert_i
 
         for(int base = node->vert_offset; base < end; base += 3)
         {
-            float t = intersect_triangle(ray_start, ray_dir, object.mesh->vertices + base);
+            float t = intersect_triangle(ray_start, ray_dir, obj.mesh->vertices + base);
 
             if(t >= 0 && (vert_id == -1 || t <= t_min))
             {
@@ -715,6 +715,231 @@ float intersect_object(vec3 ray_start, vec3 ray_dir, Object& object, int& vert_i
         }
     }
     return t_min;
+}
+
+enum PivotType
+{
+    PIVOT_MESH_ORIGIN,
+    PIVOT_WORLD_ORIGIN,
+};
+
+enum ControlMode
+{
+    CTRL_IDLE,
+    CTRL_TRANSLATE,
+    CTRL_SCALE,
+    CTRL_ROTATE,
+};
+
+struct Control
+{
+    ControlMode mode;
+    PivotType pivot;
+    int axes_active;
+    bool axes_local;
+    int axis_prev_sel;
+    bool shift_down;
+    vec2 cursor_win;
+    vec2 cursor_win_init;
+    vec3 scale_init;
+    mat4 rot_init;
+    vec3 pos_init;
+};
+
+void control_init(Control& ctrl)
+{
+    ctrl.mode = CTRL_IDLE;
+    ctrl.pivot = PIVOT_MESH_ORIGIN;
+    ctrl.shift_down = false;
+}
+
+void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor_win1, vec2 cursor_win2)
+{
+    int axis_count = 0;
+    vec3 axes[3];
+    vec3 basis[3] = {{1,0,0},{0,1,0},{0,0,1}};
+
+    for(int i = 0; i < 3; ++i)
+    {
+        if(ctrl.axes_active & (1 << i))
+        {
+            axes[axis_count] = basis[i];
+            axis_count += 1;
+        }
+    }
+    vec3 plane_normal;
+
+    switch(axis_count)
+    {
+    case 1:
+    {
+        vec3 dir_to_eye = normalize(nav.eye_pos - obj.pos);
+        vec3 v = normalize(cross(dir_to_eye, axes[0]));
+        plane_normal = cross(axes[0], v);
+        break;
+    }
+    case 2:
+        plane_normal = cross(axes[0], axes[1]);
+        break;
+    case 3:
+        plane_normal = normalize(nav.eye_pos - obj.pos);
+        break;
+    default:
+        assert(false);
+    }
+
+    if(ctrl.axes_local)
+        plane_normal = mat4_to_mat3(obj.rot) * plane_normal;
+
+    vec2 cursors[2] = {cursor_win1, cursor_win2};
+    vec3 points[2];
+
+    for(int i = 0; i < 2; ++i)
+    {
+        vec3 ray_start, ray_dir;
+        nav_get_cursor_ray(nav, cursors[i], ray_start, ray_dir);
+        float t = intersect_plane(ray_start, ray_dir, plane_normal, obj.pos);
+        points[i] = ray_start + (t * ray_dir);
+    }
+    vec3 diff = points[1] - points[0];
+
+    if(axis_count == 1)
+        diff = dot(axes[0], diff) * axes[0];
+
+    obj.pos = obj.pos + diff;
+}
+
+void control_process_event(Control& ctrl, Nav& nav, Object& obj, SDL_Event& e)
+{
+    switch(e.type)
+    {
+    case SDL_KEYDOWN:
+    {
+        switch(e.key.keysym.sym)
+        {
+        case SDLK_LSHIFT:
+        {
+            ctrl.shift_down = true;
+            break;
+        }
+        case SDLK_p:
+        {
+            if(!ctrl.mode)
+                ctrl.pivot = ctrl.pivot == PIVOT_MESH_ORIGIN ? PIVOT_WORLD_ORIGIN : PIVOT_MESH_ORIGIN;
+            break;
+        }
+        case SDLK_s:
+        case SDLK_r:
+        case SDLK_g:
+        {
+            ControlMode new_mode = CTRL_SCALE;
+
+            if(e.key.keysym.sym == SDLK_r)
+                new_mode = CTRL_ROTATE;
+            else if(e.key.keysym.sym == SDLK_g)
+                new_mode = CTRL_TRANSLATE;
+
+            if(ctrl.mode == new_mode)
+                break;
+
+            if(!ctrl.mode)
+            {
+                ctrl.mode = new_mode;
+                ctrl.axes_active = 7;
+                ctrl.axes_local = false;
+                ctrl.axis_prev_sel = 0;
+                ctrl.cursor_win = nav.cursor_win;
+                ctrl.cursor_win_init = nav.cursor_win;
+                ctrl.scale_init = obj.scale;
+                ctrl.rot_init = obj.rot;
+                ctrl.pos_init = obj.pos;
+            }
+            else
+            {
+                ctrl.mode = new_mode;
+                obj.scale = ctrl.scale_init;
+                obj.rot = ctrl.rot_init;
+                obj.pos = ctrl.pos_init;
+                apply_transform(ctrl, nav, obj, ctrl.cursor_win_init, ctrl.cursor_win);
+            }
+            break;
+        }
+        case SDLK_x:
+        case SDLK_y:
+        case SDLK_z:
+        {
+            if(!ctrl.mode)
+                break;
+            int axis_sel = 1 << 0;
+
+            if(e.key.keysym.sym == SDLK_y)
+                axis_sel = 1 << 1;
+            else if(e.key.keysym.sym == SDLK_z)
+                axis_sel = 1 << 2;
+
+            int axes = ctrl.shift_down ? ~axis_sel : axis_sel;
+
+            if(ctrl.axis_prev_sel != axis_sel)
+            {
+                ctrl.axis_prev_sel = axis_sel;
+                ctrl.axes_active = axes;
+                ctrl.axes_local = false;
+            }
+            else
+            {
+                if(ctrl.axes_local)
+                {
+                    ctrl.axis_prev_sel = 0;
+                    ctrl.axes_active = 7;
+                    ctrl.axes_local = false;
+                }
+                else
+                {
+                    ctrl.axes_active = axes;
+                    ctrl.axes_local = true;
+                }
+            }
+            obj.scale = ctrl.scale_init;
+            obj.rot = ctrl.rot_init;
+            obj.pos = ctrl.pos_init;
+            apply_transform(ctrl, nav, obj, ctrl.cursor_win_init, ctrl.cursor_win);
+            break;
+        }
+        }
+        break;
+    }
+    case SDL_KEYUP:
+    {
+        if(e.key.keysym.sym == SDLK_LSHIFT)
+            ctrl.shift_down = false;
+        break;
+    }
+    case SDL_MOUSEMOTION:
+    {
+        if(!ctrl.mode)
+            break;
+        vec2 cursor_win = {(float)e.motion.x, (float)e.motion.y};
+        apply_transform(ctrl, nav, obj, ctrl.cursor_win, cursor_win);
+        ctrl.cursor_win = cursor_win;
+        break;
+    }
+    case SDL_MOUSEBUTTONDOWN:
+    {
+        if(!ctrl.mode)
+            break;
+
+        if(e.button.button == SDL_BUTTON_LEFT)
+            ctrl.mode = CTRL_IDLE;
+        else if(e.button.button == SDL_BUTTON_RIGHT)
+        {
+            ctrl.mode = CTRL_IDLE;
+            obj.scale = ctrl.scale_init;
+            obj.rot = ctrl.rot_init;
+            obj.pos = ctrl.pos_init;
+        }
+        break;
+    }
+    }
 }
 
 void draw_segment(GLuint prog, vec3 v1, vec3 v2, vec3 color)
@@ -764,11 +989,14 @@ int main()
     {
         Object obj;
         obj.mesh = &meshes[1];
-        obj.position = {0,0,0};
-        obj.rotation = rotate_x(0);
-        obj.scale = {1,1,1};
+        obj.pos = vec3{0,0,0};
+        obj.rot = identity4();
+        obj.scale = vec3{1,1,1};
         objects.push_back(obj);
     }
+
+    Control control;
+    control_init(control);
 
     Nav nav;
     {
@@ -779,7 +1007,7 @@ int main()
 
     bool quit = false;
     Object* selected = nullptr;
-    int vert_id;
+    int selected_vert_id;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
     while(!quit)
@@ -788,20 +1016,19 @@ int main()
 
         while(SDL_PollEvent(&event))
         {
-            nav_process_event(nav, event);
-
-            if(event.type == SDL_QUIT)
+            if(event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE))
                 quit = true;
-            else if(event.type == SDL_KEYDOWN)
-            {
-                switch(event.key.keysym.sym)
-                {
-                case SDLK_ESCAPE:
-                    quit = true;
-                    break;
-                }
-            }
-            else if(event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
+
+            bool ctrl_active = control.mode;
+            bool nav_active = nav.mmb_down || nav.mmb_shift_down;
+
+            if(!ctrl_active)
+                nav_process_event(nav, event);
+
+            if(!nav_active && selected)
+                control_process_event(control, nav, *selected, event);
+
+            if(!ctrl_active && event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
             {
                 selected = nullptr;
                 float t_min = FLT_MAX;
@@ -817,7 +1044,7 @@ int main()
                     {
                         selected = &obj;
                         t_min = t;
-                        vert_id = vid;
+                        selected_vert_id = vid;
                     }
                 }
             }
@@ -862,8 +1089,16 @@ int main()
         {
             GLint diffuse_color_loc = glGetUniformLocation(prog, "diffuse_color");
             GLint model_loc = glGetUniformLocation(prog, "model");
-            vec3 diffuse_color = selected == &obj ? vec3{0.6, 0.15, 0} : vec3{0.2, 0.2, 0.2};
-            mat4 model = translate(obj.position) * obj.rotation * scale(obj.scale);
+            vec3 diffuse_color = vec3{0.3, 0.3, 0.3};
+
+            if(selected == &obj)
+            {
+                if(!control.mode)
+                    diffuse_color = vec3{0.6, 0.3, 0};
+                else
+                    diffuse_color = vec3{0.6, 0.1, 0};
+            }
+            mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
             glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
             glBindVertexArray(obj.mesh->vao);
@@ -885,14 +1120,14 @@ int main()
         if(selected)
         {
             Object& obj = *selected;
-            Vertex* verts = obj.mesh->vertices + vert_id;
+            Vertex* verts = obj.mesh->vertices + selected_vert_id;
             vec3 coords[] = {verts[0].pos, verts[1].pos, verts[2].pos};
             vec3 normal = normalize(cross(coords[1] - coords[0], coords[2] - coords[0]));
 
             for(vec3& coord: coords)
                 coord = coord + 0.001 * normal;
 
-            mat4 model = translate(obj.position) * obj.rotation * scale(obj.scale);
+            mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
             GLint model_loc = glGetUniformLocation(prog_solid, "model");
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
             vec3 color = {0,1,0};
