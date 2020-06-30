@@ -366,11 +366,17 @@ vec3 transform3(mat4 m, vec3 v)
     return {h.x, h.y, h.z};
 }
 
+struct Ray
+{
+    vec3 pos;
+    vec3 dir;
+};
+
 // does not handle a parallel case
 
-float intersect_plane(vec3 ray_start, vec3 ray_dir, vec3 plane_normal, vec3 plane_pos)
+float intersect_plane(Ray ray, vec3 normal, vec3 pos)
 {
-    float t = dot(plane_normal, plane_pos - ray_start) / dot(plane_normal, ray_dir);
+    float t = dot(normal, pos - ray.pos) / dot(normal, ray.dir);
     return t;
 }
 
@@ -391,7 +397,6 @@ struct Nav
     float far;
     bool ortho;
     bool aligned;
-    int align_dir;
 };
 
 void rebuild_view_matrix(Nav& nav)
@@ -444,7 +449,7 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
     rebuild_proj_matrix(nav);
 }
 
-void nav_get_cursor_ray(Nav& nav, vec2 cursor_win, vec3& ray_start, vec3& ray_dir)
+Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
 {
     float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
     float right = top * (nav.win_size.x / nav.win_size.y);
@@ -452,18 +457,20 @@ void nav_get_cursor_ray(Nav& nav, vec2 cursor_win, vec3& ray_start, vec3& ray_di
     float y = (-2*top/nav.win_size.y) * (cursor_win.y + 0.5) + top;
     float z = -nav.near;
     mat4 world_f_view = invert_coord_change(nav.view);
+    Ray ray;
 
     if(nav.ortho)
     {
-        ray_start = transform3(world_f_view, vec3{x,y,z});
-        ray_dir = normalize(nav.center - nav.eye_pos);
+        ray.pos = transform3(world_f_view, vec3{x,y,z});
+        ray.dir = normalize(nav.center - nav.eye_pos);
     }
     else
     {
         mat3 eye_basis = mat4_to_mat3(world_f_view);
-        ray_start = nav.eye_pos;
-        ray_dir = normalize( eye_basis * vec3{x,y,z} );
+        ray.pos = nav.eye_pos;
+        ray.dir = normalize( eye_basis * vec3{x,y,z} );
     }
+    return ray;
 }
 
 void nav_process_event(Nav& nav, SDL_Event& e)
@@ -482,11 +489,10 @@ void nav_process_event(Nav& nav, SDL_Event& e)
 
             for(int i = 0; i < 2; ++i)
             {
-                vec3 ray_start, ray_dir;
-                nav_get_cursor_ray(nav, cursors[i], ray_start, ray_dir);
-                float t = intersect_plane(ray_start, ray_dir, normal, nav.center);
+                Ray ray = nav_get_cursor_ray(nav, cursors[i]);
+                float t = intersect_plane(ray, normal, nav.center);
                 assert(t > 0);
-                points[i] = ray_start + t*ray_dir;
+                points[i] = ray.pos + t*ray.dir;
             }
             vec3 d = points[0] - points[1];
             nav.eye_pos = nav.eye_pos + d;
@@ -495,6 +501,7 @@ void nav_process_event(Nav& nav, SDL_Event& e)
         }
         else if(nav.mmb_down)
         {
+            nav.aligned = false;
             float dx = 4*pi * -(new_cursor_win.x - nav.cursor_win.x) / nav.win_size.x;
             float dy = 4*pi * -(new_cursor_win.y - nav.cursor_win.y) / nav.win_size.y;
             mat4 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
@@ -534,10 +541,9 @@ void nav_process_event(Nav& nav, SDL_Event& e)
         nav.mmb_down = !nav.shift_down;
         nav.mmb_shift_down = nav.shift_down;
 
-        if(nav.mmb_down)
+        if(nav.mmb_down && nav.aligned)
         {
             nav.ortho = false;
-            nav.aligned = false;
             rebuild_proj_matrix(nav);
         }
         break;
@@ -583,17 +589,18 @@ void nav_process_event(Nav& nav, SDL_Event& e)
         if(dot(new_dir, new_dir) == 0)
             break;
 
-        if(nav.aligned)
-            nav.align_dir *= -1;
-        else
-        {
-            nav.aligned = true;
-            nav.align_dir = 1;
-        }
+        vec3 prev_dir = normalize(nav.center - nav.eye_pos);
+        float prod = dot(new_dir, prev_dir);
+        int flip_coeff = 1;
+
+        if(nav.aligned && fabs(prod) > 0.99)
+            flip_coeff = prod > 0 ? -1 : 1;
+
         float radius = length(nav.center - nav.eye_pos);
-        nav.eye_pos = nav.center - (radius * nav.align_dir * new_dir);
-        nav.eye_x = flip_x ? nav.align_dir * new_x : new_x;
+        nav.eye_pos = nav.center - (radius * flip_coeff * new_dir);
+        nav.eye_x = flip_x ? flip_coeff * new_x : new_x;
         nav.ortho = true;
+        nav.aligned = true;
         rebuild_view_matrix(nav);
         rebuild_proj_matrix(nav);
         break;
@@ -607,16 +614,16 @@ void nav_process_event(Nav& nav, SDL_Event& e)
     } // switch
 }
 
-bool intersect_AABB(vec3 ray_start, vec3 ray_dir, BBox bbox, float& t)
+bool intersect_AABB(Ray ray, BBox bbox, float& t)
 {
-    vec3 inv_dir = {1 / ray_dir.x, 1 / ray_dir.y, 1 / ray_dir.z};
+    vec3 inv_dir = {1 / ray.dir.x, 1 / ray.dir.y, 1 / ray.dir.z};
     float tmin = FLT_MIN;
     float tmax = FLT_MAX;
 
     for(int i = 0; i < 3; ++i)
     {
-        float t1 = (bbox.min[i] - ray_start[i]) * inv_dir[i];
-        float t2 = (bbox.max[i] - ray_start[i]) * inv_dir[i];
+        float t1 = (bbox.min[i] - ray.pos[i]) * inv_dir[i];
+        float t2 = (bbox.max[i] - ray.pos[i]) * inv_dir[i];
 
         if(t1 > t2)
         {
@@ -638,7 +645,7 @@ bool intersect_AABB(vec3 ray_start, vec3 ray_dir, BBox bbox, float& t)
 
 // returns t ray paremter, t is negative on a miss
 
-float intersect_triangle(vec3 ray_start, vec3 ray_dir, Vertex* verts)
+float intersect_triangle(Ray ray, Vertex* verts)
 {
     vec3 coords[3] = {verts[0].pos, verts[1].pos, verts[2].pos};
     vec3 edge01 = coords[1] - coords[0];
@@ -647,11 +654,11 @@ float intersect_triangle(vec3 ray_start, vec3 ray_dir, Vertex* verts)
     vec3 normal = cross(edge01, edge12);
     float area = length(normal);
     normal = (1 / area) * normal; // normalize
-    float t = intersect_plane(ray_start, ray_dir, normal, coords[0]);
+    float t = intersect_plane(ray, normal, coords[0]);
 
     if(t < 0)
         return t;
-    vec3 p = ray_start + (t * ray_dir);
+    vec3 p = ray.pos + t*ray.dir;
     float b0 = dot(normal, cross(edge12, p - coords[1])) / area;
     float b1 = dot(normal, cross(edge20, p - coords[2])) / area;
     float b2 = dot(normal, cross(edge01, p - coords[0])) / area;
@@ -663,13 +670,13 @@ float intersect_triangle(vec3 ray_start, vec3 ray_dir, Vertex* verts)
 
 // t is negative on a miss
 
-float intersect_object(vec3 ray_start, vec3 ray_dir, Object& obj, int& vert_id)
+float intersect_object(Ray ray, Object& obj, int& vert_id)
 {
     vec3 inv_scale = {1/obj.scale.x, 1/obj.scale.y, 1/obj.scale.z};
     mat4 obj_f_world = scale(inv_scale) * transpose(obj.rot) * translate(-obj.pos);
-    ray_start = transform3(obj_f_world, ray_start);
-    ray_dir = mat4_to_mat3(obj_f_world) * ray_dir;
-    int is_dir_neg[3] = {ray_dir.x < 0, ray_dir.y < 0, ray_dir.z < 0};
+    ray.pos = transform3(obj_f_world, ray.pos);
+    ray.dir = mat4_to_mat3(obj_f_world) * ray.dir;
+    int is_dir_neg[3] = {ray.dir.x < 0, ray.dir.y < 0, ray.dir.z < 0};
     vert_id = -1;
     float t_min = -1;
     std::vector<BVHNode*> nodes_to_visit;
@@ -680,7 +687,7 @@ float intersect_object(vec3 ray_start, vec3 ray_dir, Object& obj, int& vert_id)
         BVHNode* node = nodes_to_visit.back();
         nodes_to_visit.pop_back();
         float t;
-        bool hit = intersect_AABB(ray_start, ray_dir, node->bbox, t);
+        bool hit = intersect_AABB(ray, node->bbox, t);
 
         if(!hit)
             continue;
@@ -705,7 +712,7 @@ float intersect_object(vec3 ray_start, vec3 ray_dir, Object& obj, int& vert_id)
 
         for(int base = node->vert_offset; base < end; base += 3)
         {
-            float t = intersect_triangle(ray_start, ray_dir, obj.mesh->vertices + base);
+            float t = intersect_triangle(ray, obj.mesh->vertices + base);
 
             if(t >= 0 && (vert_id == -1 || t <= t_min))
             {
@@ -756,9 +763,9 @@ void control_init(Control& ctrl)
 
 void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
 {
-    int axis_count = 0;
     vec3 axes[3];
     vec3 basis[3] = {{1,0,0},{0,1,0},{0,0,1}};
+    int axis_count = 0;
 
     for(int i = 0; i < 3; ++i)
     {
@@ -768,82 +775,36 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
             axis_count += 1;
         }
     }
+
     vec3 dir_to_eye = normalize(nav.eye_pos - nav.center);
-    vec3 plane_normal;
-    vec3 rot_axis;
-
-    switch(axis_count)
-    {
-    case 1:
-    {
-        vec3 v = normalize(cross(dir_to_eye, axes[0]));
-        plane_normal = cross(axes[0], v);
-        rot_axis = axes[0];
-        break;
-    }
-    case 2:
-        plane_normal = cross(axes[0], axes[1]);
-        rot_axis = plane_normal;
-
-        if( (ctrl.axes_active & 5) == 5) // negate cross(x,z) to follow a right-handed orientation
-            rot_axis = -rot_axis;
-        break;
-    case 3:
-        plane_normal = dir_to_eye;
-        rot_axis = dir_to_eye;
-        break;
-    default:
-        assert(false);
-    }
-
-    if(dot(rot_axis, dir_to_eye) < 0)
-        rot_axis = -rot_axis;
-
-    vec2 cursors[2] = {ctrl.cursor_win_init, cursor2_win};
-    vec3 points[2];
-
-    for(int i = 0; i < 2; ++i)
-    {
-        vec3 ray_start, ray_dir;
-        nav_get_cursor_ray(nav, cursors[i], ray_start, ray_dir);
-        float t = intersect_plane(ray_start, ray_dir, plane_normal, obj.pos);
-        points[i] = ray_start + (t * ray_dir);
-    }
     vec3 origin = ctrl.pivot == PIVOT_MESH_ORIGIN ? obj.pos : vec3{0,0,0};
-
-    switch(ctrl.mode)
     {
-    case CTRL_TRANSLATE:
-    {
-        vec3 diff = points[1] - points[0];
-
-        if(axis_count == 1)
-            diff = dot(axes[0], diff) * axes[0];
-
-        obj.pos = ctrl.pos_init + diff;
-        break;
+        Ray ray = nav_get_cursor_ray(nav, cursor2_win);
+        float t = intersect_plane(ray, dir_to_eye, nav.center);
+        ctrl.vis_torque_point = ray.pos + t*ray.dir;
     }
-    case CTRL_SCALE:
+
+    if(ctrl.mode == CTRL_ROTATE)
     {
-        vec3 lim_normal = normalize(points[0] - origin);
-        float sign = ( dot(lim_normal, points[1]) - dot(lim_normal, origin) ) < 0 ? -1 : 1;
+        vec3 rot_axis = axes[0];
 
-        float d0 = length(points[0] - origin);
-        float d1 = length(points[1] - origin);
-        vec3 add_scale;
+        if(axis_count == 2)
+        {
+            rot_axis = cross(axes[0], axes[1]);
 
-        for(int i = 0; i < 3; ++i)
-            add_scale[i] = (ctrl.axes_active & (1<<i)) ? sign * d1/d0 : 1;
+            if( (ctrl.axes_active & 5) == 5) // negate cross(x,z) to follow a right-handed orientation
+                rot_axis = -rot_axis;
+        }
+        else if(axis_count == 3)
+            rot_axis = dir_to_eye;
 
-        obj.scale = mul_cwise(ctrl.scale_init, add_scale);
-        break;
-    }
-    case CTRL_ROTATE:
-    {
+        if(dot(rot_axis, dir_to_eye) < 0)
+            rot_axis = -rot_axis;
+
         mat4 clip_f_world = nav.proj * nav.view;
         vec4 origin_clip = clip_f_world * vec4{origin.x, origin.y, origin.z, 1};
         vec2 origin_ndc = (1 / origin_clip.w) * vec2{origin_clip.x, origin_clip.y};
-        cursors[0] = ctrl.cursor_win;
+        vec2 cursors[2] = {ctrl.cursor_win, cursor2_win};
         vec2 cursors_ndc[2];
 
         for(int i = 0; i < 2; ++i)
@@ -861,17 +822,64 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
 
         if(ctrl.pivot == PIVOT_WORLD_ORIGIN)
             obj.pos = transform3(add_rot, obj.pos);
-        break;
+        return;
     }
-    default:
-        assert(false);
-    }
-    // vis_torque_point = cursors[1] fails if the intersected plane is parallel to a ray, this is a fix
+
+    if(nav.ortho)
     {
-        vec3 ray_start, ray_dir;
-        nav_get_cursor_ray(nav, cursor2_win, ray_start, ray_dir);
-        float t = intersect_plane(ray_start, ray_dir, dir_to_eye, nav.center);
-        ctrl.vis_torque_point = ray_start + (t * ray_dir);
+        vec3 axes_tmp[3];
+        int count = 0;
+
+        for(int i = 0; i < axis_count; ++i)
+        {
+            if(fabs(dot(dir_to_eye, axes[i])) > 0.999)
+                continue;
+            axes_tmp[count] = axes[i];
+            count += 1;
+        }
+        memcpy(axes, axes_tmp, sizeof(axes));
+        axis_count = count;
+    }
+
+    vec3 plane_normal = dir_to_eye;
+
+    if(axis_count == 1)
+        plane_normal = cross( axes[0], normalize(cross(dir_to_eye, axes[0])) );
+    else if(axis_count == 2)
+        plane_normal = cross(axes[0], axes[1]);
+
+    vec2 cursors[2] = {ctrl.cursor_win_init, cursor2_win};
+    vec3 points[2];
+
+    for(int i = 0; i < 2; ++i)
+    {
+        Ray ray = nav_get_cursor_ray(nav, cursors[i]);
+        float t = intersect_plane(ray, plane_normal, obj.pos);
+        points[i] = ray.pos + t*ray.dir;
+    }
+
+    if(ctrl.mode == CTRL_TRANSLATE)
+    {
+        vec3 diff = points[1] - points[0];
+
+        if(axis_count == 1)
+            diff = dot(axes[0], diff) * axes[0];
+
+        obj.pos = ctrl.pos_init + diff;
+    }
+    else
+    {
+        assert(ctrl.mode == CTRL_SCALE);
+        vec3 lim_normal = normalize(points[0] - origin);
+        float sign = ( dot(lim_normal, points[1]) - dot(lim_normal, origin) ) < 0 ? -1 : 1;
+        float d0 = length(points[0] - origin);
+        float d1 = length(points[1] - origin);
+        vec3 add_scale;
+
+        for(int i = 0; i < 3; ++i)
+            add_scale[i] = (ctrl.axes_active & (1<<i)) ? sign * d1/d0 : 1;
+
+        obj.scale = mul_cwise(ctrl.scale_init, add_scale);
     }
 }
 
@@ -1128,10 +1136,10 @@ int main()
                 }
             }
 
-            if(!ctrl_active)
+            if(!ctrl_active || event.type == SDL_MOUSEMOTION)
                 nav_process_event(nav, event);
 
-            if(!nav_active)
+            if(!nav_active || event.type == SDL_MOUSEMOTION)
             {
                 Object* obj = sel_id ? &objects[sel_id] : nullptr;
                 control_process_event(control, nav, obj, event);
@@ -1141,13 +1149,12 @@ int main()
             {
                 sel_id = 0;
                 float t_min = FLT_MAX;
-                vec3 ray_start, ray_dir;
-                nav_get_cursor_ray(nav, nav.cursor_win, ray_start, ray_dir);
+                Ray ray = nav_get_cursor_ray(nav, nav.cursor_win);
 
                 for(std::size_t i = 1; i < objects.size(); ++i)
                 {
                     int vid;
-                    float t = intersect_object(ray_start, ray_dir, objects[i], vid);
+                    float t = intersect_object(ray, objects[i], vid);
 
                     if(t >= 0 && t < t_min)
                     {
