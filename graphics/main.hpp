@@ -582,3 +582,45 @@ mat4 quat_to_mat4(vec4 q)
     m.data[15] = 1;
     return m;
 }
+
+// mat = translate * rotate * scale
+inline
+void decompose(mat4 mat, vec3& pos, mat4& rot, vec3& scale)
+{
+    pos.x = mat.data[3];
+    pos.y = mat.data[7];
+    pos.z = mat.data[11];
+
+    for(int col = 0; col < 3; ++col)
+    {
+        float v = 0;
+
+        for(int row = 0; row < 3; ++row)
+            v += mat.data[4*row + col] * mat.data[4*row + col];
+
+        scale[col] = sqrtf(v);
+    }
+    rot = {};
+    rot.data[15] = 1;
+
+    for(int col = 0; col < 3; ++col)
+    {
+        for(int row = 0; row < 3; ++row)
+            rot.data[4*row + col] = mat.data[4*row + col] / scale[col];
+    }
+
+    // fix the handness
+
+    vec3 x1 = {rot.data[0], rot.data[4], rot.data[8]};
+    vec3 y1 = {rot.data[1], rot.data[5], rot.data[9]};
+    vec3 z1 = {rot.data[2], rot.data[6], rot.data[10]};
+    vec3 z2 = cross(x1, y1);
+
+    if(dot(z2, z1) < 0)
+    {
+        rot.data[2] = z2.x;
+        rot.data[6] = z2.y;
+        rot.data[10] = z2.z;
+        scale.z *= -1;
+    }
+}
