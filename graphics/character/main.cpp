@@ -583,7 +583,7 @@ vec3 get_nearest_triangle_point(vec3 pos, Vertex* verts)
     return nearest;
 }
 
-#define PLANE_OFFSET (0.01)
+#define PLANE_OFFSET 0.01
 
 vec3 get_offset_pos(float radius, vec3 pos, Mesh& level)
 {
@@ -595,12 +595,12 @@ vec3 get_offset_pos(float radius, vec3 pos, Mesh& level)
         {
             vec3 p = get_nearest_triangle_point(pos, level.vertices + base);
 
-            if(length(p - pos) >= radius + PLANE_OFFSET)
+            if(length(p - pos) + 0.001 >= radius + PLANE_OFFSET)
                 continue;
 
             done = false;
             vec3 normal = normalize(pos - p);
-            pos = p + (radius + PLANE_OFFSET * 1.1) * normal;
+            pos = p + (radius + PLANE_OFFSET) * normal;
         }
 
         if(done)
@@ -750,11 +750,11 @@ int main()
 
         bool apply_gravity = false;
         {
-            STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-3*PLANE_OFFSET,0}, level);
+            // slide down on steep slopes, steeper than the given angle
+            float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
+            STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-max_offset_y,0}, level);
 
             if(!sti.valid)
-                apply_gravity = true;
-            else if( dot(sti.normal, vec3{0,1,0}) < cosf(deg_to_rad(60)) ) // slide down on steep slopes, steeper than the given angle
                 apply_gravity = true;
         }
 
