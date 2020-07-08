@@ -713,6 +713,7 @@ int main()
 
     while(!quit)
     {
+        bool jump = false;
         SDL_Event event;
 
         while(SDL_PollEvent(&event))
@@ -742,12 +743,16 @@ int main()
                 case SDLK_d:
                     d_down = down;
                     break;
+                case SDLK_SPACE:
+                    jump = down;
+                    break;
                 }
             }
         }
 
         Uint64 current_counter = SDL_GetPerformanceCounter();
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
+        dt = min(dt, 0.030); // debugging
         prev_counter = current_counter;
         float ang_vel= 2*pi/2;
 
@@ -756,47 +761,39 @@ int main()
         if(d_down)
             forward = transform3(rotate_y(-ang_vel*dt), forward);
 
-        bool apply_gravity = false;
-        {
-            // slide down on steep slopes, steeper than the given angle
-            float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
-            STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-max_offset_y,0}, level);
+        vec3 init_pos = ball.pos;
+        // slide down on steep slopes, steeper than the given angle
+        float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
+        STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-max_offset_y,0}, level);
 
-            if(!sti.valid)
-                apply_gravity = true;
-        }
-
-        if(apply_gravity)
+        if(!sti.valid)
         {
-            vec3 acc = {0, -9.8 * 10, 0};
+            vec3 acc = {0, -9.8 * 20, 0};
             vec3 new_pos = ball.pos + (dt * vel) + (0.5 * dt * dt * acc);
-            vel = vel + dt * acc;
             ball.pos = slide(radius, ball.pos, new_pos, level);
+
+            for(int i = 0; i < 3; ++i)
+            {
+                if(i == 1 && vel[i] < 0)
+                    continue;
+                if( (ball.pos[i] - init_pos[i]) < (new_pos[i] - init_pos[i]) )
+                    vel[i] = 0;
+            }
+            vel = vel + dt * acc;
         }
         else
         {
-            vec3 init_pos = ball.pos;
             vec3 dir = {};
 
             if(w_down)
                 dir = dir + forward;
             if(s_down)
                 dir = dir - forward;
+            if(jump)
+                dir = dir + vec3{0,4,0};
 
-            float forward_vel = 35;
-            vec3 new_pos = ball.pos + (forward_vel * dt * dir);
+            vec3 new_pos = ball.pos + (20 * dt * dir);
             ball.pos = slide(radius, ball.pos, new_pos, level);
-
-            /*
-            // snap to ground
-            float snap_dist = 0.5 * radius;
-
-            STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-snap_dist,0}, level);
-
-            if(sti.valid)
-                ball.pos = slide(radius, ball.pos, ball.pos - (snap_dist * sti.normal), level);
-                */
-
             vel = (1/dt) * (ball.pos - init_pos);
         }
 
