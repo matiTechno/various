@@ -638,7 +638,15 @@ vec3 slide(float radius, vec3 pos_start, vec3 pos_end, Mesh& level)
 
     if(!sti2.valid)
         return get_offset_pos(radius, P3, level);
-    return get_offset_pos(radius, sti2.point, level);
+
+    vec3 dir = normalize(cross(sti.normal, sti2.normal));
+    P3 = Q + dot(dir, P3 - Q) * dir;
+    STI sti3 = intersect_level(radius, Q, P3, level);
+
+    if(!sti3.valid)
+        return get_offset_pos(radius, P3, level);
+
+    return get_offset_pos(radius, sti3.point, level);
 }
 
 int main()
