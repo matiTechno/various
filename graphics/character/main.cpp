@@ -432,7 +432,8 @@ STI intersect_triangle(float radius, vec3 pos_start, vec3 pos_end, Vertex* verts
 {
     vec3 coords[3] = {verts[0].pos, verts[1].pos, verts[2].pos};
     float min_t = FLT_MAX;
-    vec3 inormal;
+    STI sti;
+    sti.valid = false;
 
     // face
     do
@@ -457,7 +458,7 @@ STI intersect_triangle(float radius, vec3 pos_start, vec3 pos_end, Vertex* verts
         if(b0 < 0 || b1 < 0 || b2 < 0)
             break;
         min_t = t;
-        inormal = normal;
+        sti.normal = normal;
     }
     while(0);
 
@@ -489,7 +490,7 @@ STI intersect_triangle(float radius, vec3 pos_start, vec3 pos_end, Vertex* verts
             continue;
         min_t = t;
         vec3 tangent = L * normalize(A);
-        inormal = normalize(S0 + t*V - tangent);
+        sti.normal = normalize(S0 + t*V - tangent);
     }
 
     // vertices
@@ -511,16 +512,12 @@ STI intersect_triangle(float radius, vec3 pos_start, vec3 pos_end, Vertex* verts
         if(t < 0 || t > min_t || isnan(t))
             continue;
         min_t = t;
-        inormal = normalize(S0 + t*V);
+        sti.normal = normalize(S0 + t*V);
     }
-
-    STI sti;
-    sti.valid = false;
 
     if(min_t <= 1)
     {
         sti.point = pos_start + min_t * (pos_end - pos_start);
-        sti.normal = inormal;
         sti.valid = true;
     }
     return sti;
@@ -652,9 +649,7 @@ vec3 slide(float radius, vec3 pos_start, vec3 pos_end, Mesh& level)
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
-    {
         assert(false);
-    }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_Window* window = SDL_CreateWindow("demo", 0, 0, 100, 100, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_OPENGL);
@@ -665,6 +660,7 @@ int main()
     if(!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
         assert(false);
 
+    float radius = 1.3;
     GLuint prog = create_program(_vert, _frag);
 
     std::vector<Mesh> meshes;
@@ -683,6 +679,7 @@ int main()
         obj.mesh = &meshes[1];
         obj.pos.x += 50;
         obj.pos.y += 100;
+        obj.scale = vec3{radius,radius,radius};
         objects.push_back(obj);
 
         obj.scale = 0.5 * obj.scale;
@@ -709,7 +706,6 @@ int main()
     bool d_down = false;
     vec3 forward = {0,0,1};
     vec3 vel = {};
-    float radius = ball.scale.x;
 
     while(!quit)
     {
@@ -771,14 +767,13 @@ int main()
             vec3 acc = {0, -9.8 * 20, 0};
             vec3 new_pos = ball.pos + (dt * vel) + (0.5 * dt * dt * acc);
             ball.pos = slide(radius, ball.pos, new_pos, level);
+            // this is not perfect but fine for now
+            vel.x = (ball.pos.x - init_pos.x) / dt;
+            vel.z = (ball.pos.z - init_pos.z) / dt;
 
-            for(int i = 0; i < 3; ++i)
-            {
-                if(i == 1 && vel[i] < 0)
-                    continue;
-                if( (ball.pos[i] - init_pos[i]) < (new_pos[i] - init_pos[i]) )
-                    vel[i] = 0;
-            }
+            if(vel.y > 0 && (ball.pos.y - init_pos.y < new_pos.y - init_pos.y))
+                vel.y = 0;
+
             vel = vel + dt * acc;
         }
         else
@@ -792,8 +787,19 @@ int main()
             if(jump)
                 dir = dir + vec3{0,4,0};
 
-            vec3 new_pos = ball.pos + (20 * dt * dir);
-            ball.pos = slide(radius, ball.pos, new_pos, level);
+            if(dot(dir,dir))
+            {
+                vec3 new_pos = ball.pos + (20 * dt * dir);
+                ball.pos = slide(radius, ball.pos, new_pos, level);
+                // snap mechanic
+                if(!jump)
+                {
+                    STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-0.5f*radius,0}, level);
+
+                    if(sti.valid)
+                        ball.pos = get_offset_pos(radius, sti.point, level);
+                }
+            }
             vel = (1/dt) * (ball.pos - init_pos);
         }
 
