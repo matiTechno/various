@@ -186,240 +186,6 @@ float intersect_plane(Ray ray, vec3 normal, vec3 pos)
     return t;
 }
 
-struct Nav
-{
-    vec3 center;
-    vec3 eye_pos;
-    vec3 eye_x;
-    mat4 view;
-    mat4 proj;
-    bool mmb_down;
-    bool mmb_shift_down;
-    bool shift_down;
-    vec2 cursor_win;
-    vec2 win_size;
-    float top;
-    float near;
-    float far;
-    bool ortho;
-    bool aligned;
-};
-
-void rebuild_view_matrix(Nav& nav)
-{
-    vec3 x = nav.eye_x;
-    vec3 z = normalize(nav.eye_pos - nav.center);
-    vec3 y = cross(z, x);
-    mat4 rot = identity4();
-    rot.data[0] = x.x;
-    rot.data[1] = x.y;
-    rot.data[2] = x.z;
-    rot.data[4] = y.x;
-    rot.data[5] = y.y;
-    rot.data[6] = y.z;
-    rot.data[8] = z.x;
-    rot.data[9] = z.y;
-    rot.data[10] = z.z;
-    nav.view = rot * translate(-nav.eye_pos);
-}
-
-void rebuild_proj_matrix(Nav& nav)
-{
-    float aspect = nav.win_size.x / nav.win_size.y;
-    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
-    float right = top * aspect;
-
-    if(nav.ortho)
-        nav.proj = orthographic(-right, right, -top, top, nav.near, nav.far);
-    else
-        nav.proj = frustum(-right, right, -top, top, nav.near, nav.far);
-}
-
-void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fovy, float near, float far)
-{
-    nav.center = {0,0,0};
-    nav.eye_pos = eye_pos;
-    vec3 forward = normalize(nav.center - eye_pos);
-    nav.eye_x = normalize(cross(forward, vec3{0,1,0}));
-    nav.mmb_down = false;
-    nav.mmb_shift_down = false;
-    nav.shift_down = false;
-    nav.win_size.x = win_width;
-    nav.win_size.y = win_height;
-    nav.top = tanf(deg_to_rad(fovy) / 2.f) * near;
-    nav.near = near;
-    nav.far = far;
-    nav.ortho = false;
-    nav.aligned = false;
-    rebuild_view_matrix(nav);
-    rebuild_proj_matrix(nav);
-}
-
-Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
-{
-    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
-    float right = top * (nav.win_size.x / nav.win_size.y);
-    float x = (2*right/nav.win_size.x) * (cursor_win.x + 0.5) - right;
-    float y = (-2*top/nav.win_size.y) * (cursor_win.y + 0.5) + top;
-    float z = -nav.near;
-    mat4 world_f_view = invert_coord_change(nav.view);
-    Ray ray;
-
-    if(nav.ortho)
-    {
-        ray.pos = transform3(world_f_view, vec3{x,y,z});
-        ray.dir = normalize(nav.center - nav.eye_pos);
-    }
-    else
-    {
-        mat3 eye_basis = mat4_to_mat3(world_f_view);
-        ray.pos = nav.eye_pos;
-        ray.dir = normalize( eye_basis * vec3{x,y,z} );
-    }
-    return ray;
-}
-
-void nav_process_event(Nav& nav, SDL_Event& e)
-{
-    switch(e.type)
-    {
-    case SDL_MOUSEMOTION:
-    {
-        vec2 new_cursor_win = {(float)e.motion.x, (float)e.motion.y};
-
-        if(nav.mmb_shift_down)
-        {
-            vec3 normal = normalize(nav.eye_pos - nav.center);
-            vec2 cursors[2] = {nav.cursor_win, new_cursor_win};
-            vec3 points[2];
-
-            for(int i = 0; i < 2; ++i)
-            {
-                Ray ray = nav_get_cursor_ray(nav, cursors[i]);
-                float t = intersect_plane(ray, normal, nav.center);
-                assert(t > 0);
-                points[i] = ray.pos + t*ray.dir;
-            }
-            vec3 d = points[0] - points[1];
-            nav.eye_pos = nav.eye_pos + d;
-            nav.center = nav.center + d;
-            rebuild_view_matrix(nav);
-        }
-        else if(nav.mmb_down)
-        {
-            nav.aligned = false;
-            float dx = 4*pi * -(new_cursor_win.x - nav.cursor_win.x) / nav.win_size.x;
-            float dy = 4*pi * -(new_cursor_win.y - nav.cursor_win.y) / nav.win_size.y;
-            mat4 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
-            nav.eye_pos = transform3(translate(nav.center) * rot * translate(-nav.center), nav.eye_pos);
-            nav.eye_x = transform3(rot, nav.eye_x);
-            rebuild_view_matrix(nav);
-        }
-        nav.cursor_win = new_cursor_win;
-        break;
-    }
-    case SDL_MOUSEWHEEL:
-    {
-        if(nav.mmb_down || nav.mmb_shift_down)
-            break;
-        vec3 diff = nav.eye_pos - nav.center;
-        float scale = e.wheel.y < 0 ? powf(1.3, -e.wheel.y) : (1 / powf(1.3, e.wheel.y));
-        nav.eye_pos = nav.center + (scale * diff);
-        rebuild_view_matrix(nav);
-
-        if(nav.ortho)
-            rebuild_proj_matrix(nav);
-        break;
-    }
-    case SDL_WINDOWEVENT:
-    {
-        if(e.window.event != SDL_WINDOWEVENT_SIZE_CHANGED)
-            break;
-        nav.win_size.x = e.window.data1;
-        nav.win_size.y = e.window.data2;
-        rebuild_proj_matrix(nav);
-        break;
-    }
-    case SDL_MOUSEBUTTONDOWN:
-    {
-        if(e.button.button != SDL_BUTTON_MIDDLE)
-            break;
-        nav.mmb_down = !nav.shift_down;
-        nav.mmb_shift_down = nav.shift_down;
-
-        if(nav.mmb_down && nav.aligned)
-        {
-            nav.ortho = false;
-            rebuild_proj_matrix(nav);
-        }
-        break;
-    }
-    case SDL_MOUSEBUTTONUP:
-    {
-        if(e.button.button != SDL_BUTTON_MIDDLE)
-            break;
-        nav.mmb_down = false;
-        nav.mmb_shift_down = false;
-        break;
-    }
-    case SDL_KEYDOWN:
-    {
-        vec3 new_dir = {};
-        vec3 new_x;
-        bool flip_x = false;
-
-        switch(e.key.keysym.sym)
-        {
-        case SDLK_LSHIFT:
-            nav.shift_down = true;
-            break;
-        case SDLK_q:
-            nav.ortho = !nav.ortho;
-            rebuild_proj_matrix(nav);
-            break;
-        case SDLK_x:
-            new_dir = {-1,0,0};
-            new_x = {0,0,-1};
-            flip_x = true;
-            break;
-        case SDLK_y:
-            new_dir = {0,-1,0};
-            new_x = {1,0,0};
-            break;
-        case SDLK_z:
-            new_dir = {0,0,-1};
-            new_x = {1,0,0};
-            flip_x = true;
-            break;
-        }
-        if(dot(new_dir, new_dir) == 0)
-            break;
-
-        vec3 prev_dir = normalize(nav.center - nav.eye_pos);
-        float prod = dot(new_dir, prev_dir);
-        int flip_coeff = 1;
-
-        if(nav.aligned && fabs(prod) > 0.99)
-            flip_coeff = prod > 0 ? -1 : 1;
-
-        float radius = length(nav.center - nav.eye_pos);
-        nav.eye_pos = nav.center - (radius * flip_coeff * new_dir);
-        nav.eye_x = flip_x ? flip_coeff * new_x : new_x;
-        nav.ortho = true;
-        nav.aligned = true;
-        rebuild_view_matrix(nav);
-        rebuild_proj_matrix(nav);
-        break;
-    }
-    case SDL_KEYUP:
-    {
-        if(e.key.keysym.sym == SDLK_LSHIFT)
-            nav.shift_down = false;
-        break;
-    }
-    } // switch
-}
-
 // sphere triangle intersection
 struct STI
 {
@@ -646,6 +412,321 @@ vec3 slide(float radius, vec3 pos_start, vec3 pos_end, Mesh& level)
     return get_offset_pos(radius, sti3.point, level);
 }
 
+// returns t ray paremter, t is negative on a miss
+
+float intersect_triangle(Ray ray, Vertex* verts)
+{
+    vec3 coords[3] = {verts[0].pos, verts[1].pos, verts[2].pos};
+    vec3 edge01 = coords[1] - coords[0];
+    vec3 edge12 = coords[2] - coords[1];
+    vec3 edge20 = coords[0] - coords[2];
+    vec3 normal = cross(edge01, edge12);
+    float area = length(normal);
+    normal = (1 / area) * normal; // normalize
+    float t = intersect_plane(ray, normal, coords[0]);
+
+    if(t < 0)
+        return t;
+    vec3 p = ray.pos + t*ray.dir;
+    float b0 = dot(normal, cross(edge12, p - coords[1])) / area;
+    float b1 = dot(normal, cross(edge20, p - coords[2])) / area;
+    float b2 = dot(normal, cross(edge01, p - coords[0])) / area;
+
+    if(b0 < 0 || b1 < 0 || b2 < 0)
+        return -1;
+    return t;
+}
+
+float intersect_level(Ray ray, Mesh& level)
+{
+    float min_t = -1;
+
+    for(int base = 0; base < level.vertex_count; base += 3)
+    {
+        float t = intersect_triangle(ray, level.vertices + base);
+
+        if(t >= 0 && (t < min_t || min_t < 0))
+            min_t = t;
+    }
+    return min_t;
+}
+
+#define DIST_INTERP_TIME 0.3
+
+struct Controller
+{
+    vec3 pos;
+    vec3 forward;
+    vec3 vel;
+    float radius;
+    float max_dist;
+    float min_dist;
+    float target_dist;
+    float current_dist;
+    float dist_vel;
+    float pitch;
+    float yaw;
+    vec2 win_size;
+    bool lmb_down;
+    bool rmb_down;
+    bool mmb_down;
+    bool w_down;
+    bool s_down;
+    bool a_down;
+    bool d_down;
+    bool q_down;
+    bool e_down;
+    bool jump_action;
+    vec3 eye_pos;
+    mat4 view;
+    mat4 proj;
+};
+
+void ctrl_init(Controller& ctrl, float win_width, float win_height)
+{
+    ctrl.pos = vec3{50,100,0};
+    ctrl.forward = vec3{0,0,-1};
+    ctrl.vel = {};
+    ctrl.radius = 1.2;
+    ctrl.max_dist = 150;
+    ctrl.min_dist = ctrl.radius / 2;
+    ctrl.target_dist = 35;
+    ctrl.current_dist = ctrl.target_dist;
+    ctrl.dist_vel = {};
+    ctrl.pitch = deg_to_rad(35);
+    ctrl.yaw = 0;
+    ctrl.win_size = {win_width, win_height};
+    ctrl.lmb_down = false;
+    ctrl.rmb_down = false;
+    ctrl.mmb_down = false;
+    ctrl.w_down = false;
+    ctrl.s_down = false;
+    ctrl.a_down = false;
+    ctrl.d_down = false;
+    ctrl.q_down = false;
+    ctrl.e_down = false;
+    ctrl.jump_action = false;
+}
+
+void ctrl_process_event(Controller& ctrl, SDL_Event& e)
+{
+    switch(e.type)
+    {
+    case SDL_WINDOWEVENT:
+    {
+        if(e.window.event != SDL_WINDOWEVENT_SIZE_CHANGED)
+            break;
+        ctrl.win_size.x = e.window.data1;
+        ctrl.win_size.y = e.window.data2;
+        break;
+    }
+    case SDL_MOUSEBUTTONUP:
+    case SDL_MOUSEBUTTONDOWN:
+    {
+        bool down = e.type == SDL_MOUSEBUTTONDOWN;
+
+        switch(e.button.button)
+        {
+        case SDL_BUTTON_LEFT:
+            ctrl.lmb_down = down;
+            SDL_SetRelativeMouseMode((SDL_bool)down);
+            break;
+        case SDL_BUTTON_RIGHT:
+            ctrl.rmb_down = down;
+            SDL_SetRelativeMouseMode((SDL_bool)down);
+            break;
+        case SDL_BUTTON_MIDDLE:
+            ctrl.mmb_down = down;
+            SDL_SetRelativeMouseMode((SDL_bool)down);
+            break;
+        }
+        break;
+    }
+    case SDL_MOUSEWHEEL:
+    {
+        float base = 1.4;
+        float scale = e.wheel.y < 0 ? powf(base, -e.wheel.y) : (1 / powf(base, e.wheel.y));
+        ctrl.target_dist = max(ctrl.min_dist, min(ctrl.max_dist, ctrl.target_dist * scale));
+        ctrl.dist_vel = (ctrl.target_dist - ctrl.current_dist) / DIST_INTERP_TIME;
+        break;
+    }
+    case SDL_MOUSEMOTION:
+    {
+        if(!ctrl.lmb_down && !ctrl.rmb_down && !ctrl.mmb_down)
+            break;
+        float dx = 2*pi * (float)e.motion.xrel / ctrl.win_size.x;
+        float dy = 2*pi * (float)e.motion.yrel / ctrl.win_size.y;
+        ctrl.pitch += dy;
+        ctrl.pitch = min(ctrl.pitch, deg_to_rad(80));
+        ctrl.pitch = max(ctrl.pitch, deg_to_rad(-80));
+        ctrl.yaw -= dx;
+        break;
+    }
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+    {
+        bool down = e.type == SDL_KEYDOWN;
+
+        switch(e.key.keysym.sym)
+        {
+        case SDLK_w:
+            ctrl.w_down = down;
+            break;
+        case SDLK_s:
+            ctrl.s_down = down;
+            break;
+        case SDLK_a:
+            ctrl.a_down = down;
+            break;
+        case SDLK_d:
+            ctrl.d_down = down;
+            break;
+        case SDLK_q:
+            ctrl.q_down = down;
+            break;
+        case SDLK_e:
+            ctrl.e_down = down;
+            break;
+        case SDLK_SPACE:
+            ctrl.jump_action = down;
+            break;
+        }
+        break;
+    }
+    }
+}
+
+void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
+{
+    // character update
+
+    bool turn_mode = !ctrl.rmb_down && !ctrl.mmb_down;
+    float turn_angle = 0;
+
+    if(turn_mode)
+    {
+        float turn_dir = 0;
+
+        if(ctrl.a_down)
+            turn_dir += 1;
+        if(ctrl.d_down)
+            turn_dir += -1;
+
+        turn_angle = turn_dir * 2 * pi / 2.5 * dt;
+        ctrl.forward = transform3(rotate_y(turn_angle), ctrl.forward);
+
+        if(ctrl.lmb_down)
+            ctrl.yaw -= turn_angle;
+    }
+    else
+    {
+        ctrl.forward = transform3(rotate_y(ctrl.yaw), ctrl.forward);
+        ctrl.yaw = 0;
+    }
+
+    vec3 move_dir = {};
+    assert(ctrl.forward.y == 0);
+    vec3 move_right = cross(ctrl.forward, vec3{0,1,0});
+
+    if(ctrl.w_down || ctrl.mmb_down || (ctrl.lmb_down && ctrl.rmb_down))
+        move_dir = move_dir + ctrl.forward;
+    if(ctrl.s_down)
+        move_dir = move_dir - ctrl.forward;
+    if( ctrl.q_down || (ctrl.a_down && !turn_mode) )
+        move_dir = move_dir - move_right;
+    if( ctrl.e_down || (ctrl.d_down && !turn_mode) )
+        move_dir = move_dir + move_right;
+
+    if(dot(move_dir, move_dir))
+        move_dir = normalize(move_dir);
+
+    vec3 vel = 20 * move_dir;
+
+    if(dot(move_dir, ctrl.forward) + 0.01 < 0)
+        vel = 0.5 * vel;
+
+    // slide down on steep slopes, steeper than the given angle
+    float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
+    STI sti = intersect_level(ctrl.radius, ctrl.pos, ctrl.pos + vec3{0,-max_offset_y,0}, level);
+
+    if(!sti.valid)
+    {
+        if(!ctrl.vel.x && !ctrl.vel.z)
+            ctrl.vel = ctrl.vel + 0.5 * vel;
+
+        vec3 acc = {0, -9.8 * 20, 0};
+        vec3 init_pos = ctrl.pos;
+        vec3 new_pos = init_pos + (dt * ctrl.vel) + (0.5 * dt * dt * acc);
+        ctrl.pos = slide(ctrl.radius, init_pos, new_pos, level);
+
+        if(ctrl.vel.y > 0 && (ctrl.pos.y - init_pos.y < new_pos.y - init_pos.y))
+            ctrl.vel.y = 0;
+
+        ctrl.vel = ctrl.vel + dt * acc;
+    }
+    else
+    {
+        if(ctrl.jump_action)
+            vel = vel + 80 * vec3{0,1,0};
+
+        ctrl.pos = slide(ctrl.radius, ctrl.pos, ctrl.pos + dt * vel, level);
+
+        // snap mechanic
+        if(!ctrl.jump_action && length(vel))
+        {
+            STI sti = intersect_level(ctrl.radius, ctrl.pos, ctrl.pos + vec3{0,-0.5f*ctrl.radius,0}, level);
+
+            if(sti.valid)
+                ctrl.pos = get_offset_pos(ctrl.radius, sti.point, level);
+        }
+        ctrl.vel = vel;
+    }
+
+    ctrl.jump_action = false;
+
+    // camera update
+
+    if(!ctrl.lmb_down && (length(move_dir) || turn_angle))
+    {
+        float angle = min(2 * pi / 1.5 * dt, fabs(ctrl.yaw));
+
+        if(ctrl.yaw > 0)
+            angle *= -1;
+        ctrl.yaw += angle;
+    }
+
+    vec3 eye_dir_xz = transform3(rotate_y(ctrl.yaw), -ctrl.forward);
+    vec3 eye_right = cross(vec3{0,1,0}, eye_dir_xz);
+    Ray ray;
+    ray.pos = ctrl.pos;
+    ray.dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
+    float t = intersect_level(ray, level);
+    float hit_dist = FLT_MAX;
+
+    if(t > 0)
+        hit_dist = max(ctrl.min_dist, t - 0.5); // some offset to avoid near plane clipping artifacts
+
+    if(ctrl.current_dist > hit_dist)
+    {
+        ctrl.current_dist = hit_dist;
+        ctrl.dist_vel = (ctrl.target_dist - ctrl.current_dist) / DIST_INTERP_TIME;
+    }
+    else
+    {
+        float target_dist = min(hit_dist, ctrl.target_dist);
+        float new_dist = ctrl.current_dist + ctrl.dist_vel * dt;
+
+        if(ctrl.dist_vel > 0)
+            ctrl.current_dist = min(target_dist, new_dist);
+        else
+            ctrl.current_dist = max(target_dist, new_dist);
+    }
+
+    ctrl.eye_pos = ctrl.pos + ctrl.current_dist * ray.dir;
+    ctrl.view = lookat(ctrl.eye_pos, -ray.dir);
+    ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
+}
+
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -660,8 +741,14 @@ int main()
     if(!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
         assert(false);
 
-    float radius = 1.3;
     GLuint prog = create_program(_vert, _frag);
+
+    Controller ctrl;
+    {
+        int width, height;
+        SDL_GetWindowSize(window, &width, &height);
+        ctrl_init(ctrl, width, height);
+    }
 
     std::vector<Mesh> meshes;
     meshes.push_back(load_mesh("level.obj"));
@@ -669,141 +756,46 @@ int main()
     std::vector<Object> objects;
     objects.reserve(100);
     {
+        // level
         Object obj;
         obj.mesh = &meshes[0];
         obj.pos = {};
         obj.rot = identity4();
         obj.scale = vec3{1,1,1};
         objects.push_back(obj);
-
+        // character
         obj.mesh = &meshes[1];
-        obj.pos.x += 50;
-        obj.pos.y += 100;
-        obj.scale = vec3{radius,radius,radius};
+        obj.scale = vec3{ctrl.radius,ctrl.radius,ctrl.radius};
         objects.push_back(obj);
-
+        // forward indicator
         obj.scale = 0.5 * obj.scale;
         objects.push_back(obj);
-    }
-
-    Mesh& level = *objects[0].mesh;
-    Object& ball = objects[1];
-    Object& dir_ball = objects[2];
-
-    Nav nav;
-    {
-        int width, height;
-        SDL_GetWindowSize(window, &width, &height);
-        nav_init(nav, vec3{200,100,0}, width, height, 60, 0.1, 1000);
     }
 
     Uint64 prev_counter = SDL_GetPerformanceCounter();
     bool quit = false;
 
-    bool w_down = false;
-    bool s_down = false;
-    bool a_down = false;
-    bool d_down = false;
-    vec3 forward = {0,0,1};
-    vec3 vel = {};
-
     while(!quit)
     {
-        bool jump = false;
         SDL_Event event;
 
         while(SDL_PollEvent(&event))
         {
-            if(event.type == SDL_QUIT)
+            if(event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE))
                 quit = true;
-            nav_process_event(nav, event);
-
-            if(event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
-            {
-                bool down = event.type == SDL_KEYDOWN;
-
-                switch(event.key.keysym.sym)
-                {
-                case SDLK_ESCAPE:
-                    quit = true;
-                    break;
-                case SDLK_w:
-                    w_down = down;
-                    break;
-                case SDLK_s:
-                    s_down = down;
-                    break;
-                case SDLK_a:
-                    a_down = down;
-                    break;
-                case SDLK_d:
-                    d_down = down;
-                    break;
-                case SDLK_SPACE:
-                    jump = down;
-                    break;
-                }
-            }
+            ctrl_process_event(ctrl, event);
         }
 
         Uint64 current_counter = SDL_GetPerformanceCounter();
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
         dt = min(dt, 0.030); // debugging
         prev_counter = current_counter;
-        float ang_vel= 2*pi/2;
 
-        if(a_down)
-            forward = transform3(rotate_y(ang_vel*dt), forward);
-        if(d_down)
-            forward = transform3(rotate_y(-ang_vel*dt), forward);
+        ctrl_resolve_events(ctrl, dt, meshes[0]);
 
-        vec3 init_pos = ball.pos;
-        // slide down on steep slopes, steeper than the given angle
-        float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
-        STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-max_offset_y,0}, level);
+        objects[1].pos = ctrl.pos;
+        objects[2].pos = objects[1].pos + 2 * ctrl.forward;
 
-        if(!sti.valid)
-        {
-            vec3 acc = {0, -9.8 * 20, 0};
-            vec3 new_pos = ball.pos + (dt * vel) + (0.5 * dt * dt * acc);
-            ball.pos = slide(radius, ball.pos, new_pos, level);
-            // this is not perfect but fine for now
-            vel.x = (ball.pos.x - init_pos.x) / dt;
-            vel.z = (ball.pos.z - init_pos.z) / dt;
-
-            if(vel.y > 0 && (ball.pos.y - init_pos.y < new_pos.y - init_pos.y))
-                vel.y = 0;
-
-            vel = vel + dt * acc;
-        }
-        else
-        {
-            vec3 dir = {};
-
-            if(w_down)
-                dir = dir + forward;
-            if(s_down)
-                dir = dir - forward;
-            if(jump)
-                dir = dir + vec3{0,4,0};
-
-            if(dot(dir,dir))
-            {
-                vec3 new_pos = ball.pos + (20 * dt * dir);
-                ball.pos = slide(radius, ball.pos, new_pos, level);
-                // snap mechanic
-                if(!jump)
-                {
-                    STI sti = intersect_level(radius, ball.pos, ball.pos + vec3{0,-0.5f*radius,0}, level);
-
-                    if(sti.valid)
-                        ball.pos = get_offset_pos(radius, sti.point, level);
-                }
-            }
-            vel = (1/dt) * (ball.pos - init_pos);
-        }
-
-        dir_ball.pos = ball.pos + 2 * forward;
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
         glViewport(0, 0, width, height);
@@ -814,7 +806,7 @@ int main()
         glUseProgram(prog);
         {
             vec3 light_intensity = {1,1,1};
-            vec3 light_dir = normalize(nav.eye_pos - nav.center);
+            vec3 light_dir = normalize(vec3{0.3,1,0});
             vec3 specular_color = {0.2, 0.2, 0.2};
             GLint proj_loc = glGetUniformLocation(prog, "proj");
             GLint view_loc = glGetUniformLocation(prog, "view");
@@ -825,12 +817,12 @@ int main()
             GLint specular_color_loc = glGetUniformLocation(prog, "specular_color");
             GLint specular_exp_loc = glGetUniformLocation(prog, "specular_exp");
 
-            glUniformMatrix4fv(view_loc, 1, GL_TRUE, nav.view.data);
-            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, nav.proj.data);
+            glUniformMatrix4fv(view_loc, 1, GL_TRUE, ctrl.view.data);
+            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, ctrl.proj.data);
             glUniform3fv(light_int_loc, 1, &light_intensity.x);
             glUniform3fv(light_dir_loc, 1, &light_dir.x);
             glUniform1f(ambient_int_loc, 0.01);
-            glUniform3fv(eye_pos_loc, 1, &nav.eye_pos.x);
+            glUniform3fv(eye_pos_loc, 1, &ctrl.eye_pos.x);
             glUniform3fv(specular_color_loc, 1, &specular_color.x);
             glUniform1f(specular_exp_loc, 50);
         }
@@ -842,9 +834,9 @@ int main()
             GLint model_loc = glGetUniformLocation(prog, "model");
             vec3 diffuse_color = vec3{0.3, 0.3, 0.3};
 
-            if(&obj == &ball)
+            if(i == 1)
                 diffuse_color = vec3{1,0,0};
-            else if(&obj == &dir_ball)
+            else if(i == 2)
                 diffuse_color = vec3{0,1,0};
 
             mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
