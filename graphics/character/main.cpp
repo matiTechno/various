@@ -451,6 +451,77 @@ float intersect_level(Ray ray, Mesh& level)
     return min_t;
 }
 
+// point on a circle
+
+struct CirPoint
+{
+    vec3 b1;
+    vec3 b2;
+    vec3 center;
+    float R;
+
+    vec3 get(float t)
+    {
+        return (R*cosf(t)*b1) + (R*sinf(t)*b2) + center;
+    }
+};
+
+float intersect_plane(CirPoint cirp, vec3 plane_normal, vec3 plane_point)
+{
+    float a = cirp.R * dot(cirp.b1, plane_normal);
+    float b = cirp.R * dot(cirp.b2, plane_normal);
+
+    if(b < 0)
+        return -pi/2;
+    float c = dot(plane_normal, plane_point - cirp.center);
+    float inv = sqrtf(a*a + b*b);
+    float arg1 = c / inv;
+
+    if(arg1 < -1 || arg1 > 1)
+        return -pi/2;
+    float arg2 = a / inv;
+
+    if(arg2 < -1 || arg2 > 1)
+        return -pi/2;
+    return asinf(arg1) - asinf(arg2);
+}
+
+float intersect_triangle(CirPoint cirp, Vertex* verts)
+{
+    vec3 coords[3] = {verts[0].pos, verts[1].pos, verts[2].pos};
+    vec3 edge01 = coords[1] - coords[0];
+    vec3 edge12 = coords[2] - coords[1];
+    vec3 edge20 = coords[0] - coords[2];
+    vec3 normal = cross(edge01, edge12);
+    float area = length(normal);
+    normal = (1 / area) * normal; // normalize
+    float t = intersect_plane(cirp, normal, coords[0]);
+    vec3 p = cirp.get(t);
+    float b0 = dot(normal, cross(edge12, p - coords[1])) / area;
+    float b1 = dot(normal, cross(edge20, p - coords[2])) / area;
+    float b2 = dot(normal, cross(edge01, p - coords[0])) / area;
+
+    if(b0 < 0 || b1 < 0 || b2 < 0)
+        return -pi/2;
+    return t;
+}
+
+// returns a maximal angle lower than 0
+
+float intersect_level(CirPoint cirp, Mesh& level)
+{
+    float max_t = -pi/2;
+
+    for(int base = 0; base < level.vertex_count; base += 3)
+    {
+        float t = intersect_triangle(cirp, level.vertices + base);
+
+        if(t < 0)
+            max_t = max(max_t, t);
+    }
+    return max_t;
+}
+
 #define DIST_INTERP_TIME 0.3
 
 struct Controller
@@ -596,6 +667,9 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e)
     }
 }
 
+#define CIRP_EPS (pi/60)
+#define RAY_EPS 0.3
+
 void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
 {
     // character update
@@ -682,13 +756,11 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
         ctrl.vel = vel;
     }
 
-    ctrl.jump_action = false;
-
     // camera update
 
     if(!ctrl.lmb_down && (length(move_dir) || turn_angle))
     {
-        float angle = min(2 * pi / 1.5 * dt, fabs(ctrl.yaw));
+        float angle = min(2*pi/1.5 * dt, fabs(ctrl.yaw));
 
         if(ctrl.yaw > 0)
             angle *= -1;
@@ -697,34 +769,54 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
 
     vec3 eye_dir_xz = transform3(rotate_y(ctrl.yaw), -ctrl.forward);
     vec3 eye_right = cross(vec3{0,1,0}, eye_dir_xz);
-    Ray ray;
-    ray.pos = ctrl.pos;
-    ray.dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
-    float t = intersect_level(ray, level);
+    vec3 eye_dir;
     float hit_dist = FLT_MAX;
 
-    if(t > 0)
-        hit_dist = max(ctrl.min_dist, t - 0.5); // some offset to avoid near plane clipping artifacts
+    if(ctrl.pitch < 0)
+    {
+        CirPoint cirp;
+        cirp.b1 = eye_dir_xz;
+        cirp.b2 = vec3{0,1,0};
+        cirp.center = ctrl.pos;
+        cirp.R = ctrl.current_dist;
+        float t_cirp = intersect_level(cirp, level);
+        bool eye_hit = t_cirp + CIRP_EPS >= ctrl.pitch;
+        vec3 eye_pos = eye_hit ? cirp.get(t_cirp + CIRP_EPS) : cirp.get(ctrl.pitch);
+        hit_dist = length(eye_pos - ctrl.pos);
+        eye_dir = normalize(eye_pos - ctrl.pos);
+        float t_ray = intersect_level(Ray{ctrl.pos, eye_dir}, level);
+
+        if(t_ray > 0 && t_ray - RAY_EPS < hit_dist)
+            hit_dist = max(ctrl.min_dist, t_ray - RAY_EPS);
+    }
+    else
+    {
+        eye_dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
+        float t = intersect_level(Ray{ctrl.pos, eye_dir}, level);
+
+        if(t > 0)
+            hit_dist = max(ctrl.min_dist, t - RAY_EPS);
+    }
 
     if(ctrl.current_dist > hit_dist)
     {
         ctrl.current_dist = hit_dist;
         ctrl.dist_vel = (ctrl.target_dist - ctrl.current_dist) / DIST_INTERP_TIME;
     }
+
+    float lim_dist = min(hit_dist, ctrl.target_dist);
+    float new_dist = ctrl.current_dist + ctrl.dist_vel * dt;
+
+    if(ctrl.dist_vel > 0)
+        ctrl.current_dist = min(lim_dist, new_dist);
     else
-    {
-        float target_dist = min(hit_dist, ctrl.target_dist);
-        float new_dist = ctrl.current_dist + ctrl.dist_vel * dt;
+        ctrl.current_dist = max(lim_dist, new_dist);
 
-        if(ctrl.dist_vel > 0)
-            ctrl.current_dist = min(target_dist, new_dist);
-        else
-            ctrl.current_dist = max(target_dist, new_dist);
-    }
-
-    ctrl.eye_pos = ctrl.pos + ctrl.current_dist * ray.dir;
-    ctrl.view = lookat(ctrl.eye_pos, -ray.dir);
+    ctrl.eye_pos = ctrl.pos + ctrl.current_dist * eye_dir;
+    vec3 view_dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
+    ctrl.view = lookat(ctrl.eye_pos, -view_dir);
     ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
+    ctrl.jump_action = false;
 }
 
 int main()
