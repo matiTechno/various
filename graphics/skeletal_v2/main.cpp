@@ -125,6 +125,7 @@ struct Action
 {
     const char* name;
     BoneAction* bone_actions;
+    int bone_count;
 };
 
 struct Object
@@ -137,8 +138,9 @@ struct Object
     float action_time;
 };
 
-void load(const char* filename, Mesh& mesh, Action& action)
+void load(const char* filename, Mesh& mesh, std::vector<Action>& actions)
 {
+    mesh = {};
     FILE* file = fopen(filename, "r");
     assert(file);
     char str_buf[256];
@@ -212,40 +214,56 @@ void load(const char* filename, Mesh& mesh, Action& action)
             assert(r == 1);
         }
     }
-
-    r = fscanf(file, " action_name %s", str_buf);
+    int bone_count;
+    r = fscanf(file, " bone_count %d", &bone_count);
     assert(r == 1);
-    action.name = strdup(str_buf);
-    action.bone_actions = (BoneAction*)malloc(mesh.bone_count * sizeof(BoneAction));
+    int action_count;
+    r = fscanf(file, " action_count %d", &action_count);
+    assert(r == 1);
 
-    for(int bone_id = 0; bone_id < mesh.bone_count; ++bone_id)
+    for(int _i = 0; _i < action_count; ++_i)
     {
-        BoneAction& ba = action.bone_actions[bone_id];
-        r = fscanf(file, " loc_count %d", &ba.loc_count);
+        Action action;
+        action.bone_count = bone_count;
+        r = fscanf(file, " action_name %s", str_buf);
         assert(r == 1);
-        ba.locs = (vec3*)malloc(ba.loc_count * sizeof(vec3));
-        ba.loc_time_coords = (float*)malloc(ba.loc_count * sizeof(float));
+        action.name = strdup(str_buf);
+        action.bone_actions = (BoneAction*)malloc(action.bone_count * sizeof(BoneAction));
 
-        for(int i = 0; i < ba.loc_count; ++i)
+        for(int bone_id = 0; bone_id < action.bone_count; ++bone_id)
         {
-            r = fscanf(file, "%f %f %f %f", &ba.locs[i].x, &ba.locs[i].y, &ba.locs[i].z, ba.loc_time_coords + i);
-            assert(r == 4);
-        }
+            BoneAction& ba = action.bone_actions[bone_id];
+            r = fscanf(file, " loc_count %d", &ba.loc_count);
+            assert(r == 1);
+            ba.locs = (vec3*)malloc(ba.loc_count * sizeof(vec3));
+            ba.loc_time_coords = (float*)malloc(ba.loc_count * sizeof(float));
 
-        r = fscanf(file, " rot_count %d", &ba.rot_count);
-        assert(r == 1);
-        ba.rots = (vec4*)malloc(ba.rot_count * sizeof(vec4));
-        ba.rot_time_coords = (float*)malloc(ba.rot_count * sizeof(float));
+            for(int i = 0; i < ba.loc_count; ++i)
+            {
+                r = fscanf(file, "%f %f %f %f", &ba.locs[i].x, &ba.locs[i].y, &ba.locs[i].z, ba.loc_time_coords + i);
+                assert(r == 4);
+            }
 
-        for(int i = 0; i < ba.rot_count; ++i)
-        {
-            r = fscanf(file, "%f %f %f %f %f", &ba.rots[i].x, &ba.rots[i].y, &ba.rots[i].z, &ba.rots[i].w, ba.rot_time_coords + i);
-            assert(r == 5);
+            r = fscanf(file, " rot_count %d", &ba.rot_count);
+            assert(r == 1);
+            ba.rots = (vec4*)malloc(ba.rot_count * sizeof(vec4));
+            ba.rot_time_coords = (float*)malloc(ba.rot_count * sizeof(float));
+
+            for(int i = 0; i < ba.rot_count; ++i)
+            {
+                r = fscanf(file, "%f %f %f %f %f", &ba.rots[i].x, &ba.rots[i].y, &ba.rots[i].z, &ba.rots[i].w, ba.rot_time_coords + i);
+                assert(r == 5);
+            }
         }
+        actions.push_back(action);
     }
+
     r = fscanf(file, " %s", str_buf);
     assert(r == EOF);
     fclose(file);
+
+    if(mesh.vertex_count == 0)
+        return;
     mesh.ebo_offset = mesh.vertex_count * sizeof(Vertex);
     glGenBuffers(1, &mesh.bo);
     glGenVertexArrays(1, &mesh.vao);
@@ -265,7 +283,7 @@ void load(const char* filename, Mesh& mesh, Action& action)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.bo);
 }
 
-void init_object_anim_data(Object& obj, Mesh& mesh)
+void alloc_object_anim_data(Object& obj, Mesh& mesh)
 {
     if(!mesh.bone_count)
         return;
@@ -275,6 +293,16 @@ void init_object_anim_data(Object& obj, Mesh& mesh)
 
 void update_anim_data(Object& obj, float dt)
 {
+    if(!obj.action)
+    {
+        for(int i = 0; i < obj.mesh->bone_count; ++i)
+        {
+            obj.skinning_matrices[i] = identity4();
+            obj.cp_model_f_bone[i] = invert_coord_change(obj.mesh->bone_f_bp_mesh[i]);
+        }
+        return;
+    }
+    assert(obj.mesh->bone_count == obj.action->bone_count);
     obj.action_time += dt;
     {
         int tid = obj.action->bone_actions[0].loc_count - 1;
@@ -374,17 +402,19 @@ int main()
         glLinkProgram(program_debug);
     }
     Mesh mesh;
-    Action action;
-    load("/home/mat/Downloads/blender-2.83.0-linux64/anim_data", mesh, action);
+    std::vector<Action> actions;
+    load("/home/mat/Downloads/blender-2.83.0-linux64/anim_data", mesh, actions);
+    assert(mesh.vertex_count);
     Object obj;
     obj.mesh = &mesh;
-    obj.action = &action;
+    obj.action = actions.empty() ? nullptr : actions.data();
     obj.model_tf = rotate_y(-pi/4) * gl_from_blender();
-    init_object_anim_data(obj, mesh);
+    alloc_object_anim_data(obj, mesh);
     obj.action_time = 0;
     Mesh bone_mesh;
-    Action dummy_action;
-    load("bone_data", bone_mesh, dummy_action);
+    std::vector<Action> dummy_actions;
+    load("bone_data", bone_mesh, dummy_actions);
+    assert(bone_mesh.vertex_count);
     bool quit = false;
     bool draw_bones = false;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
@@ -407,6 +437,15 @@ int main()
                     break;
                 case SDLK_1:
                     draw_bones = !draw_bones;
+                    break;
+                case SDLK_2:
+                    if(!obj.action)
+                        break;
+                    ++obj.action;
+                    obj.action_time = 0;
+
+                    if(obj.action == actions.data() + actions.size())
+                        obj.action = actions.data();
                     break;
                 }
             }

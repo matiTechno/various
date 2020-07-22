@@ -1,3 +1,5 @@
+# place inside scripts/startup and call bpy.export() from the blender console
+
 #filename = "/home/mat/Desktop/various/graphics/skeletal_v2/exporter.py"
 #exec(compile(open(filename).read(), filename, 'exec'))
 
@@ -25,6 +27,11 @@ class BoneAction:
         self.loc_time_coords = []
         self.rots = []
         self.rot_time_coords = []
+
+class Action:
+    def __init__(self, name, bone_actions):
+        self.name = name
+        self.bone_actions = bone_actions
 
 def is_export_bone(bone, vertex_groups):
     if "locator" in bone.name:
@@ -61,228 +68,275 @@ def get_mat_export_parent_from_bone(parent_bone, mesh_from_bone, pose_bones, exp
     mesh_from_bone = parent_bone.matrix_local @ pose_bones[parent_bone.name].matrix_basis @ parent_from_bone
     return get_mat_export_parent_from_bone(parent_bone.parent, mesh_from_bone, pose_bones, export_bones)
 
-object = bpy.context.selected_objects[0]
-assert object.type == 'ARMATURE'
-armature = object.data
-mesh_object = object.children[0]
-assert mesh_object.type == 'MESH'
-assert mesh_object.matrix_basis == mathutils.Matrix.Identity(4)
-assert mesh_object.matrix_parent_inverse == mathutils.Matrix.Identity(4)
-mesh = mesh_object.data
-mesh.calc_loop_triangles()
-vertex_groups = mesh_object.vertex_groups
-assert len(vertex_groups)
-action = object.animation_data.action
-assert action
-root_bone = None
+def export(filename, action_names = [], export_mesh = True):
 
-for bone in armature.bones:
-    if bone.parent == None:
-        assert root_bone == None # only one root is allowed
-        root_bone = bone
+    assert bpy.context.object
+    object = bpy.context.object
+    assert object.type == 'ARMATURE'
+    armature = object.data
+    mesh_object = None
 
-assert root_bone
-export_bones = []
-register_export_bones(root_bone, export_bones, vertex_groups)
-map_groupid_boneid = {}
+    for child in object.children:
+        if child.type == 'MESH':
+            if mesh_object:
+                print("armature with multiple meshes is not supported")
+                assert False
+            mesh_object = child
 
-for group_id, group in enumerate(vertex_groups):
-    for bone_id, bone in enumerate(export_bones):
-        if bone.name == group.name:
-            map_groupid_boneid[group_id] = bone_id
-            break
+    assert mesh_object
+    assert mesh_object.matrix_basis == mathutils.Matrix.Identity(4)
+    assert mesh_object.matrix_parent_inverse == mathutils.Matrix.Identity(4)
+    mesh = mesh_object.data
+    mesh.calc_loop_triangles()
+    vertex_groups = mesh_object.vertex_groups
+    assert len(vertex_groups)
+    root_bone = None
 
-format_str = "pnbw" # pos, normal, 4 bone ids, 4 weights
-uv_loops = None
+    for bone in armature.bones:
+        if bone.parent == None:
+            assert root_bone == None # only one root is allowed
+            root_bone = bone
 
-if mesh.uv_layers.active:
-    uv_loops = mesh.uv_layers.active.data
-    format_str = "punbw" # pos, uv, normal, 4 bone ids, 4 weights
+    assert root_bone
+    export_bones = []
+    register_export_bones(root_bone, export_bones, vertex_groups)
+    map_groupid_boneid = {}
 
-vertices = []
+    for group_id, group in enumerate(vertex_groups):
+        for bone_id, bone in enumerate(export_bones):
+            if bone.name == group.name:
+                map_groupid_boneid[group_id] = bone_id
+                break
 
-for mv in mesh.vertices:
-    vertex = Vertex()
-    vertex.pos = mv.co
-    vertex.normal = mv.normal
-    bws = [] # (bone_id, weight) pairs
+    format_str = "pnbw" # pos, normal, 4 bone ids, 4 weights
+    uv_loops = None
 
-    for group in mv.groups:
-        bws.append( (map_groupid_boneid[group.group], group.weight) )
+    if mesh.uv_layers.active:
+        uv_loops = mesh.uv_layers.active.data
+        format_str = "punbw" # pos, uv, normal, 4 bone ids, 4 weights
 
-    assert len(bws)
-    bws = sorted(bws, key=lambda bw: bw[1], reverse=True)
+    vertices = []
+    indices = []
 
-    if len(bws) > 4:
-        bws = bws[0:4]
-    else:
-        num_append = 4 - len(bws)
+    if export_mesh:
+        for mv in mesh.vertices:
+            vertex = Vertex()
+            vertex.pos = mv.co
+            vertex.normal = mv.normal
+            bws = [] # (bone_id, weight) pairs
 
-        for i in range(num_append):
-            bws.append( (0,0) )
+            for group in mv.groups:
+                bws.append( (map_groupid_boneid[group.group], group.weight) )
 
-    mod = 0
+            assert len(bws)
+            bws = sorted(bws, key=lambda bw: bw[1], reverse=True)
 
-    for bw in bws:
-        mod += bw[1]
+            if len(bws) > 4:
+                bws = bws[0:4]
+            else:
+                num_append = 4 - len(bws)
 
-    for bw in bws:
-        vertex.bone_ids.append(bw[0])
-        vertex.weights.append(bw[1] / mod)
+                for i in range(num_append):
+                    bws.append( (0,0) )
 
-    vertices.append(vertex)
+            mod = 0
 
-indices = []
+            for bw in bws:
+                mod += bw[1]
 
-for tri in mesh.loop_triangles:
-    for loop_id in tri.loops:
-        loop = mesh.loops[loop_id]
-        indices.append(loop.vertex_index)
-        # todo: what if loops with different uvs share the same vertex?
-        if uv_loops:
-            vertices[loop.vertex_index].uv = uv_loops[loop_id].uv
+            for bw in bws:
+                vertex.bone_ids.append(bw[0])
+                vertex.weights.append(bw[1] / mod)
 
-for channel in action.fcurves:
-    if channel.mute:
-        print('warning, muted animation channels') # todo: report to user
-        break
+            vertices.append(vertex)
 
-# rt - restore
-rt_action_blend_type = object.animation_data.action_blend_type
-rt_action_influence = object.animation_data.action_influence
-rt_object_mode = object.mode
-rt_frame = bpy.context.scene.frame_current
-rt_bone_layers = []
+        for tri in mesh.loop_triangles:
+            for loop_id in tri.loops:
+                loop = mesh.loops[loop_id]
+                indices.append(loop.vertex_index)
+                # todo: what if loops with different uvs share the same vertex?
+                if uv_loops:
+                    vertices[loop.vertex_index].uv = uv_loops[loop_id].uv
 
-for layer in armature.layers:
-    rt_bone_layers.append(layer)
+    assert object.animation_data
+    # rt - restore
+    rt_object_mode = object.mode
+    rt_frame = bpy.context.scene.frame_current
+    rt_action = object.animation_data.action
+    rt_action_blend_type = object.animation_data.action_blend_type
+    rt_action_influence = object.animation_data.action_influence
+    rt_bone_layers = []
 
-object.animation_data.action_blend_type = 'REPLACE'
-object.animation_data.action_influence = 1
-bpy.ops.object.mode_set(mode='POSE')
-bpy.ops.armature.layers_show_all()
-bpy.ops.pose.select_all(action='SELECT')
-fps = bpy.context.scene.render.fps
-bone_actions = []
+    for layer in armature.layers:
+        rt_bone_layers.append(layer)
 
-for bone in export_bones:
-    bone_actions.append(BoneAction())
+    bpy.ops.object.mode_set(mode='POSE')
+    object.animation_data.action_blend_type = 'REPLACE'
+    object.animation_data.action_influence = 1
+    bpy.ops.armature.layers_show_all()
+    bpy.ops.pose.select_all(action='SELECT')
+    export_actions = []
 
-for frame_id in range(int(action.frame_range[0]), int(action.frame_range[1] + 1)):
+    for action_name in action_names:
 
-    # visual transform distorts the animation if not cleared (especially when switching actions), bug?
-    # shouldn't frame_set() clear it?
+        action = bpy.data.actions[action_name]
+        assert action
+        object.animation_data.action = action
+
+        for channel in action.fcurves:
+            if channel.mute:
+                print(f'warning [{action_name}]: muted animation channels')
+                break
+
+        bone_actions = []
+
+        for bone in export_bones:
+            bone_actions.append(BoneAction())
+
+        for frame_id in range(int(action.frame_range[0]), int(action.frame_range[1] + 1)):
+
+            # visual transform distorts the animation if not cleared (especially when switching actions), bug?
+            # shouldn't frame_set() clear it?
+            bpy.ops.pose.transforms_clear()
+            bpy.context.scene.frame_set(frame_id)
+            bpy.ops.pose.visual_transform_apply()
+            time_coord = (1.0 / bpy.context.scene.render.fps) * (frame_id - action.frame_range[0])
+
+            for i, bone in enumerate(export_bones):
+
+                mesh_from_bone = bone.matrix_local @ object.pose.bones[bone.name].matrix_basis
+                parent_from_bone = mesh_from_bone.copy()
+
+                if bone.parent:
+                    parent_from_bone = get_mat_export_parent_from_bone(bone.parent, mesh_from_bone, object.pose.bones, export_bones)
+
+                loc, rot, scale = parent_from_bone.decompose()
+                assert (scale - mathutils.Vector((1,1,1))).length < 0.001 # scaling is not supported
+                bone_action = bone_actions[i]
+                append_loc = False
+                append_rot = False
+
+                if len(bone_action.locs) == 0 or frame_id == action.frame_range[1]:
+                    append_loc = True
+                    append_rot = True
+                else:
+                    prev_loc = bone_action.locs[-1]
+                    prev_rot = bone_action.rots[-1]
+
+                    if (loc - prev_loc).length > 0.001:
+                        append_loc = True
+
+                    diff_quat = rot @ prev_rot.conjugated()
+                    diff_angle_deg = 0
+
+                    if diff_quat.w <= 1.0: # w > 1.0 (numerical error) causes an exception
+                        diff_angle_deg = abs(math.degrees(2 * math.acos(diff_quat.w)))
+
+                    if diff_angle_deg > 0.1:
+                        append_rot = True
+
+                if append_loc:
+                    bone_action.locs.append(loc)
+                    bone_action.loc_time_coords.append(time_coord)
+
+                if append_rot:
+                    bone_action.rots.append(rot)
+                    bone_action.rot_time_coords.append(time_coord)
+
+        # this makes it eaiser for a runtime to handle single frame actions
+        if len(bone_actions[0].locs) == 1:
+            for bone_action in bone_actions:
+                bone_action.locs.append(bone_action.locs[0])
+                bone_action.rots.append(bone_action.rots[0])
+
+        export_actions.append(Action(action_name, bone_actions))
+
+    # restore state (except for selected bones)
     bpy.ops.pose.transforms_clear()
-    bpy.context.scene.frame_set(frame_id)
-    bpy.ops.pose.visual_transform_apply()
-    time_coord = (1.0 / fps) * (frame_id - action.frame_range[0])
 
-    for i, bone in enumerate(export_bones):
+    for i in range(len(rt_bone_layers)):
+        armature.layers[i] = rt_bone_layers[i]
 
-        mesh_from_bone = bone.matrix_local @ object.pose.bones[bone.name].matrix_basis
-        parent_from_bone = mesh_from_bone.copy()
+    object.animation_data.action_influence = rt_action_influence
+    object.animation_data.action_blend_type = rt_action_blend_type
+    object.animation_data.action = rt_action
+    bpy.context.scene.frame_set(rt_frame)
+    bpy.ops.object.mode_set(mode=rt_object_mode)
+
+    action_bone_count = len(export_bones)
+
+    if not export_mesh:
+        export_bones = []
+
+    f = open(filename, 'w')
+    print('format', format_str, file=f)
+    print('vertex_count', len(vertices), file=f)
+
+    for v in vertices:
+        print(v.pos.x, v.pos.y, v.pos.z, end=' ', file=f)
+
+        if uv_loops:
+            print(v.uv[0], v.uv[1], end=' ', file=f)
+
+        print(v.normal.x, v.normal.y, v.normal.z, end=' ', file=f)
+
+        for id in v.bone_ids:
+            print(id, end=' ', file=f)
+
+        for weight in v.weights:
+            print(weight, end=' ', file=f)
+
+        print(file=f)
+
+    print('index_count', len(indices), file=f)
+
+    for idx in indices:
+        print(idx, end=' ', file=f)
+
+    if len(indices):
+        print(file=f)
+
+    print('bone_count', len(export_bones), file=f)
+
+    for bone in export_bones:
+        pid = -1
 
         if bone.parent:
-            parent_from_bone = get_mat_export_parent_from_bone(bone.parent, mesh_from_bone, object.pose.bones, export_bones)
+            pid = get_closest_export_parent_id(bone.parent, export_bones)
 
-        loc, rot, scale = parent_from_bone.decompose()
-        assert (scale - mathutils.Vector((1,1,1))).length < 0.001 # scaling is not supported
-        bone_action = bone_actions[i]
-        append_loc = False
-        append_rot = False
+        print(bone.name, pid, end=' ', file=f)
+        bone_from_bp_mesh = bone.matrix_local.inverted()
 
-        if len(bone_action.locs) == 0 or frame_id == action.frame_range[1]:
-            append_loc = True
-            append_rot = True
-        else:
-            prev_loc = bone_action.locs[-1]
-            prev_rot = bone_action.rots[-1]
+        for row in bone_from_bp_mesh:
+            for i in range(4):
+                print(row[i], end=' ', file=f)
+        print(file=f)
 
-            if (loc - prev_loc).length > 0.001:
-                append_loc = True
+    print('bone_count', action_bone_count, file=f) # redundant but makes parsing easier
+    print('action_count', len(export_actions), file=f)
 
-            diff_quat = rot @ prev_rot.conjugated()
-            diff_angle_deg = 0
+    for action in export_actions:
+        print('action_name', action.name, file=f)
 
-            if diff_quat.w <= 1.0: # w > 1.0 (numerical error) causes an exception
-                diff_angle_deg = abs(math.degrees(2 * math.acos(diff_quat.w)))
+        for bone_action in action.bone_actions:
+            print("loc_count", len(bone_action.locs), file=f)
 
-            if diff_angle_deg > 0.1:
-                append_rot = True
+            for i, loc in enumerate(bone_action.locs):
+                print(loc.x, loc.y, loc.z, bone_action.loc_time_coords[i], file=f)
 
-        if append_loc:
-            bone_action.locs.append(loc)
-            bone_action.loc_time_coords.append(time_coord)
+            print("rot_count", len(bone_action.rots), file=f)
 
-        if append_rot:
-            bone_action.rots.append(rot)
-            bone_action.rot_time_coords.append(time_coord)
+            for i, rot in enumerate(bone_action.rots):
+                print(rot.x, rot.y, rot.z, rot.w, bone_action.rot_time_coords[i], file=f)
 
-# restore state (except for selected bones)
-bpy.ops.pose.transforms_clear()
+    f.close()
+    print('done!')
 
-for i in range(len(rt_bone_layers)):
-    armature.layers[i] = rt_bone_layers[i]
+def register():
+    bpy.export = export
 
-bpy.ops.object.mode_set(mode=rt_object_mode)
-object.animation_data.action_influence = rt_action_influence
-object.animation_data.action_blend_type = rt_action_blend_type
-bpy.context.scene.frame_set(rt_frame)
+def unregister():
+    del bpy.export
 
-f = open('anim_data', 'w')
-print('format', format_str, file=f)
-print('vertex_count', len(vertices), file=f)
-
-for v in vertices:
-    print(v.pos.x, v.pos.y, v.pos.z, end=' ', file=f)
-
-    if uv_loops:
-        print(v.uv[0], v.uv[1], end=' ', file=f)
-
-    print(v.normal.x, v.normal.y, v.normal.z, end=' ', file=f)
-
-    for id in v.bone_ids:
-        print(id, end=' ', file=f)
-
-    for weight in v.weights:
-        print(weight, end=' ', file=f)
-
-    print(file=f)
-
-print('index_count', len(indices), file=f)
-
-for idx in indices:
-    print(idx, end=' ', file=f)
-
-print(file=f)
-
-print('bone_count', len(export_bones), file=f)
-
-for bone in export_bones:
-    pid = -1
-
-    if bone.parent:
-        pid = get_closest_export_parent_id(bone.parent, export_bones)
-
-    print(bone.name, pid, end=' ', file=f)
-    bone_from_bp_mesh = bone.matrix_local.inverted()
-
-    for row in bone_from_bp_mesh:
-        for i in range(4):
-            print(row[i], end=' ', file=f)
-    print(file=f)
-
-print('action_name', action.name, file=f)
-
-for bone_action in bone_actions:
-    print("loc_count", len(bone_action.locs), file=f)
-
-    for i, loc in enumerate(bone_action.locs):
-        print(loc.x, loc.y, loc.z, bone_action.loc_time_coords[i], file=f)
-
-    print("rot_count", len(bone_action.rots), file=f)
-
-    for i, rot in enumerate(bone_action.rots):
-        print(rot.x, rot.y, rot.z, rot.w, bone_action.rot_time_coords[i], file=f)
-
-f.close()
+if __name__ == "__main__":
+    register()
