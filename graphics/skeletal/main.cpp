@@ -558,8 +558,7 @@ int main()
             for(int i = 0; i < cmd_active.bone_count; ++i)
             {
                 RenderCmd cmd_bone = cmd_deb;
-                mat4 cp_model_from_bone = cmd_active.skinning_matrices[i] * cmd_active.bp_model_from_bone[i];
-                cmd_bone.model_transform = cmd_active.model_transform * cp_model_from_bone * cmd_bone.model_transform;
+                cmd_bone.model_transform = cmd_active.model_transform * cmd_active.cp_model_from_bone[i] * cmd_bone.model_transform;
                 gl_draw(cmd_bone);
             }
         }
