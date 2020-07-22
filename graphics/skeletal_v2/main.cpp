@@ -442,7 +442,7 @@ int main()
 
             for(int i = 0; i < obj.mesh->bone_count; ++i)
             {
-                mat4 model_tf = obj.model_tf * obj.cp_model_f_bone[i] * gl_from_blender();
+                mat4 model_tf = obj.model_tf * obj.cp_model_f_bone[i] * rotate_x(-pi/2);
                 glUniformMatrix4fv(glGetUniformLocation(program_debug, "model"), 1, GL_TRUE, model_tf.data);
                 glBindVertexArray(bone_mesh.vao);
                 glDrawElements(GL_TRIANGLES, bone_mesh.index_count, GL_UNSIGNED_INT, (void*)(uint64_t)bone_mesh.ebo_offset);
