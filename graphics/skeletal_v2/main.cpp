@@ -58,7 +58,7 @@ out vec3 out_color;
 
 void main()
 {
-    vec3 L = light_dir;
+    vec3 L = normalize(light_dir);
     vec3 N = normalize(frag_normal);
     vec3 ambient_comp = diffuse_color * ambient_intensity;
     vec3 diff_comp = diffuse_color * light_intensity * max(dot(N, L), 0);
@@ -126,6 +126,7 @@ struct Action
     const char* name;
     BoneAction* bone_actions;
     int bone_count;
+    float duration;
 };
 
 struct Object
@@ -255,6 +256,9 @@ void load(const char* filename, Mesh& mesh, std::vector<Action>& actions)
                 assert(r == 5);
             }
         }
+        assert(action.bone_count);
+        int i = action.bone_actions[0].loc_count - 1;
+        action.duration = action.bone_actions[0].loc_time_coords[i];
         actions.push_back(action);
     }
 
@@ -304,13 +308,12 @@ void update_anim_data(Object& obj, float dt)
     }
     assert(obj.mesh->bone_count == obj.action->bone_count);
     obj.action_time += dt;
-    {
-        int tid = obj.action->bone_actions[0].loc_count - 1;
-        float duration = obj.action->bone_actions[0].loc_time_coords[tid];
+    float dur = obj.action->duration;
 
-        if(obj.action_time > duration)
-            obj.action_time = min(duration, obj.action_time - duration);
-    }
+    if(obj.action_time > dur)
+        obj.action_time = min(dur, obj.action_time - dur);
+    else if(obj.action_time < 0)
+        obj.action_time = max(0, obj.action_time + dur);
 
     for(int bone_id = 0; bone_id < obj.mesh->bone_count; ++bone_id)
     {
@@ -679,6 +682,7 @@ int main()
     bool quit = false;
     bool draw_bones = false;
     bool en_camera_locator = false;
+    float time_dir = 1;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
     while(!quit)
@@ -712,6 +716,9 @@ int main()
                 case SDLK_3:
                     en_camera_locator = !en_camera_locator;
                     break;
+                case SDLK_MINUS:
+                    time_dir *= -1;
+                    break;
                 }
             }
             nav_process_event(nav, event);
@@ -724,7 +731,7 @@ int main()
         vec3 eye_pos = nav.eye_pos;
         mat4 view = nav.view;
         mat4 proj = nav.proj;
-        update_anim_data(obj, dt);
+        update_anim_data(obj, dt * time_dir);
 
         if(en_camera_locator)
         {
