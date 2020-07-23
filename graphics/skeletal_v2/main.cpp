@@ -363,6 +363,259 @@ mat4 gl_from_blender()
     return rotate_x(-pi/2);
 }
 
+struct Ray
+{
+    vec3 pos;
+    vec3 dir;
+};
+
+float intersect_plane(Ray ray, vec3 normal, vec3 pos)
+{
+    float t = dot(normal, pos - ray.pos) / dot(normal, ray.dir);
+    return t;
+}
+
+vec3 transform3(mat4 m, vec3 v)
+{
+    vec4 h = {v.x, v.y, v.z, 1};
+    h = m * h;
+    return {h.x, h.y, h.z};
+}
+
+struct Nav
+{
+    vec3 center;
+    vec3 eye_pos;
+    vec3 eye_x;
+    mat4 view;
+    mat4 proj;
+    bool mmb_down;
+    bool mmb_shift_down;
+    bool shift_down;
+    vec2 cursor_win;
+    vec2 win_size;
+    float top;
+    float near;
+    float far;
+    bool ortho;
+    bool aligned;
+};
+
+void rebuild_view_matrix(Nav& nav)
+{
+    vec3 x = nav.eye_x;
+    vec3 z = normalize(nav.eye_pos - nav.center);
+    vec3 y = cross(z, x);
+    mat4 rot = identity4();
+    rot.data[0] = x.x;
+    rot.data[1] = x.y;
+    rot.data[2] = x.z;
+    rot.data[4] = y.x;
+    rot.data[5] = y.y;
+    rot.data[6] = y.z;
+    rot.data[8] = z.x;
+    rot.data[9] = z.y;
+    rot.data[10] = z.z;
+    nav.view = rot * translate(-nav.eye_pos);
+}
+
+void rebuild_proj_matrix(Nav& nav)
+{
+    float aspect = nav.win_size.x / nav.win_size.y;
+    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
+    float right = top * aspect;
+
+    if(nav.ortho)
+        nav.proj = orthographic(-right, right, -top, top, nav.near, nav.far);
+    else
+        nav.proj = frustum(-right, right, -top, top, nav.near, nav.far);
+}
+
+void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fovy, float near, float far)
+{
+    nav.center = {0,0,0};
+    nav.eye_pos = eye_pos;
+    vec3 forward = normalize(nav.center - eye_pos);
+    nav.eye_x = normalize(cross(forward, vec3{0,1,0}));
+    nav.mmb_down = false;
+    nav.mmb_shift_down = false;
+    nav.shift_down = false;
+    nav.win_size.x = win_width;
+    nav.win_size.y = win_height;
+    nav.top = tanf(deg_to_rad(fovy) / 2.f) * near;
+    nav.near = near;
+    nav.far = far;
+    nav.ortho = false;
+    nav.aligned = false;
+    rebuild_view_matrix(nav);
+    rebuild_proj_matrix(nav);
+}
+
+Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
+{
+    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
+    float right = top * (nav.win_size.x / nav.win_size.y);
+    float x = (2*right/nav.win_size.x) * (cursor_win.x + 0.5) - right;
+    float y = (-2*top/nav.win_size.y) * (cursor_win.y + 0.5) + top;
+    float z = -nav.near;
+    mat4 world_f_view = invert_coord_change(nav.view);
+    Ray ray;
+
+    if(nav.ortho)
+    {
+        ray.pos = transform3(world_f_view, vec3{x,y,z});
+        ray.dir = normalize(nav.center - nav.eye_pos);
+    }
+    else
+    {
+        mat3 eye_basis = mat4_to_mat3(world_f_view);
+        ray.pos = nav.eye_pos;
+        ray.dir = normalize( eye_basis * vec3{x,y,z} );
+    }
+    return ray;
+}
+
+void nav_process_event(Nav& nav, SDL_Event& e)
+{
+    switch(e.type)
+    {
+    case SDL_MOUSEMOTION:
+    {
+        vec2 new_cursor_win = {(float)e.motion.x, (float)e.motion.y};
+
+        if(nav.mmb_shift_down)
+        {
+            vec3 normal = normalize(nav.eye_pos - nav.center);
+            vec2 cursors[2] = {nav.cursor_win, new_cursor_win};
+            vec3 points[2];
+
+            for(int i = 0; i < 2; ++i)
+            {
+                Ray ray = nav_get_cursor_ray(nav, cursors[i]);
+                float t = intersect_plane(ray, normal, nav.center);
+                assert(t > 0);
+                points[i] = ray.pos + t*ray.dir;
+            }
+            vec3 d = points[0] - points[1];
+            nav.eye_pos = nav.eye_pos + d;
+            nav.center = nav.center + d;
+            rebuild_view_matrix(nav);
+        }
+        else if(nav.mmb_down)
+        {
+            nav.aligned = false;
+            float dx = 4*pi * -(new_cursor_win.x - nav.cursor_win.x) / nav.win_size.x;
+            float dy = 4*pi * -(new_cursor_win.y - nav.cursor_win.y) / nav.win_size.y;
+            mat4 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
+            nav.eye_pos = transform3(translate(nav.center) * rot * translate(-nav.center), nav.eye_pos);
+            nav.eye_x = transform3(rot, nav.eye_x);
+            rebuild_view_matrix(nav);
+        }
+        nav.cursor_win = new_cursor_win;
+        break;
+    }
+    case SDL_MOUSEWHEEL:
+    {
+        if(nav.mmb_down || nav.mmb_shift_down)
+            break;
+        vec3 diff = nav.eye_pos - nav.center;
+        float scale = e.wheel.y < 0 ? powf(1.3, -e.wheel.y) : (1 / powf(1.3, e.wheel.y));
+        nav.eye_pos = nav.center + (scale * diff);
+        rebuild_view_matrix(nav);
+
+        if(nav.ortho)
+            rebuild_proj_matrix(nav);
+        break;
+    }
+    case SDL_WINDOWEVENT:
+    {
+        if(e.window.event != SDL_WINDOWEVENT_SIZE_CHANGED)
+            break;
+        nav.win_size.x = e.window.data1;
+        nav.win_size.y = e.window.data2;
+        rebuild_proj_matrix(nav);
+        break;
+    }
+    case SDL_MOUSEBUTTONDOWN:
+    {
+        if(e.button.button != SDL_BUTTON_MIDDLE)
+            break;
+        nav.mmb_down = !nav.shift_down;
+        nav.mmb_shift_down = nav.shift_down;
+
+        if(nav.mmb_down && nav.aligned)
+        {
+            nav.ortho = false;
+            rebuild_proj_matrix(nav);
+        }
+        break;
+    }
+    case SDL_MOUSEBUTTONUP:
+    {
+        if(e.button.button != SDL_BUTTON_MIDDLE)
+            break;
+        nav.mmb_down = false;
+        nav.mmb_shift_down = false;
+        break;
+    }
+    case SDL_KEYDOWN:
+    {
+        vec3 new_dir = {};
+        vec3 new_x;
+        bool flip_x = false;
+
+        switch(e.key.keysym.sym)
+        {
+        case SDLK_LSHIFT:
+            nav.shift_down = true;
+            break;
+        case SDLK_q:
+            nav.ortho = !nav.ortho;
+            rebuild_proj_matrix(nav);
+            break;
+        case SDLK_x:
+            new_dir = {-1,0,0};
+            new_x = {0,0,-1};
+            flip_x = true;
+            break;
+        case SDLK_y:
+            new_dir = {0,-1,0};
+            new_x = {1,0,0};
+            break;
+        case SDLK_z:
+            new_dir = {0,0,-1};
+            new_x = {1,0,0};
+            flip_x = true;
+            break;
+        }
+        if(dot(new_dir, new_dir) == 0)
+            break;
+
+        vec3 prev_dir = normalize(nav.center - nav.eye_pos);
+        float prod = dot(new_dir, prev_dir);
+        int flip_coeff = 1;
+
+        if(nav.aligned && fabs(prod) > 0.99)
+            flip_coeff = prod > 0 ? -1 : 1;
+
+        float radius = length(nav.center - nav.eye_pos);
+        nav.eye_pos = nav.center - (radius * flip_coeff * new_dir);
+        nav.eye_x = flip_x ? flip_coeff * new_x : new_x;
+        nav.ortho = true;
+        nav.aligned = true;
+        rebuild_view_matrix(nav);
+        rebuild_proj_matrix(nav);
+        break;
+    }
+    case SDL_KEYUP:
+    {
+        if(e.key.keysym.sym == SDLK_LSHIFT)
+            nav.shift_down = false;
+        break;
+    }
+    } // switch
+}
+
 int main()
 {
     if(SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -404,19 +657,28 @@ int main()
     Mesh mesh;
     std::vector<Action> actions;
     load("/home/mat/Downloads/blender-2.83.0-linux64/anim_data", mesh, actions);
+
+    for(int i = 0; i < mesh.bone_count; ++i)
+        printf("%s\n", mesh.bone_names[i]);
+
     assert(mesh.vertex_count);
     Object obj;
     obj.mesh = &mesh;
     obj.action = actions.empty() ? nullptr : actions.data();
-    obj.model_tf = rotate_y(-pi/4) * gl_from_blender();
+    obj.model_tf = gl_from_blender();
     alloc_object_anim_data(obj, mesh);
     obj.action_time = 0;
     Mesh bone_mesh;
     std::vector<Action> dummy_actions;
     load("bone_data", bone_mesh, dummy_actions);
     assert(bone_mesh.vertex_count);
+    Nav nav;
+    int width, height;
+    SDL_GetWindowSize(window, &width, &height);
+    nav_init(nav, vec3{0.5,2,4}, width, height, 50, 0.1, 100);
     bool quit = false;
     bool draw_bones = false;
+    bool en_camera_locator = false;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
     while(!quit)
@@ -436,9 +698,6 @@ int main()
                     quit = true;
                     break;
                 case SDLK_1:
-                    draw_bones = !draw_bones;
-                    break;
-                case SDLK_2:
                     if(!obj.action)
                         break;
                     ++obj.action;
@@ -447,19 +706,41 @@ int main()
                     if(obj.action == actions.data() + actions.size())
                         obj.action = actions.data();
                     break;
+                case SDLK_2:
+                    draw_bones = !draw_bones;
+                    break;
+                case SDLK_3:
+                    en_camera_locator = !en_camera_locator;
+                    break;
                 }
             }
+            nav_process_event(nav, event);
         }
-        int width, height;
         SDL_GetWindowSize(window, &width, &height);
         glViewport(0, 0, width, height);
         Uint64 current_counter = SDL_GetPerformanceCounter();
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
         prev_counter = current_counter;
+        vec3 eye_pos = nav.eye_pos;
+        mat4 view = nav.view;
+        mat4 proj = nav.proj;
         update_anim_data(obj, dt);
-        vec3 eye_pos = {0,1,2};
-        mat4 proj = perspective(60, (float)width/height, 0.1, 100);
-        mat4 view = lookat(eye_pos, 0, -10);
+
+        if(en_camera_locator)
+        {
+            for(int bone_id = 0; bone_id < obj.mesh->bone_count; ++bone_id)
+            {
+                const char* name = obj.mesh->bone_names[bone_id];
+
+                if(strcmp(name, "camera_locator") != 0)
+                    continue;
+                mat4 world_f_view = obj.model_tf * obj.cp_model_f_bone[bone_id];
+                eye_pos = vec3{world_f_view.data[3], world_f_view.data[7], world_f_view.data[11]};
+                view = invert_coord_change(world_f_view);
+                break;
+            }
+        }
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -481,7 +762,7 @@ int main()
 
             for(int i = 0; i < obj.mesh->bone_count; ++i)
             {
-                mat4 model_tf = obj.model_tf * obj.cp_model_f_bone[i] * rotate_x(-pi/2);
+                mat4 model_tf = obj.model_tf * obj.cp_model_f_bone[i];
                 glUniformMatrix4fv(glGetUniformLocation(program_debug, "model"), 1, GL_TRUE, model_tf.data);
                 glBindVertexArray(bone_mesh.vao);
                 glDrawElements(GL_TRIANGLES, bone_mesh.index_count, GL_UNSIGNED_INT, (void*)(uint64_t)bone_mesh.ebo_offset);

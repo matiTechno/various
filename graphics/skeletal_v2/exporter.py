@@ -223,7 +223,7 @@ def export(filename, action_names = [], export_mesh = True):
                     prev_loc = bone_action.locs[-1]
                     prev_rot = bone_action.rots[-1]
 
-                    if (loc - prev_loc).length > 0.001:
+                    if (loc - prev_loc).length > 0.00001:
                         append_loc = True
 
                     diff_quat = rot @ prev_rot.conjugated()
@@ -232,7 +232,7 @@ def export(filename, action_names = [], export_mesh = True):
                     if diff_quat.w <= 1.0: # w > 1.0 (numerical error) causes an exception
                         diff_angle_deg = abs(math.degrees(2 * math.acos(diff_quat.w)))
 
-                    if diff_angle_deg > 0.1:
+                    if diff_angle_deg > 0.00001:
                         append_rot = True
 
                 if append_loc:
