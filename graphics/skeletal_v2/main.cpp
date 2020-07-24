@@ -9,6 +9,8 @@
 #include "../glad.h"
 #include "../main.hpp"
 
+#define MAX_BONES 128
+
 static const char* src_vert = R"(
 #version 330
 
@@ -682,6 +684,7 @@ int main()
     bool quit = false;
     bool draw_bones = false;
     bool en_camera_locator = false;
+    float en_update = 1;
     float time_dir = 1;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
@@ -719,6 +722,9 @@ int main()
                 case SDLK_MINUS:
                     time_dir *= -1;
                     break;
+                case SDLK_SPACE:
+                    en_update = en_update ? 0 : 1;
+                    break;
                 }
             }
             nav_process_event(nav, event);
@@ -731,7 +737,7 @@ int main()
         vec3 eye_pos = nav.eye_pos;
         mat4 view = nav.view;
         mat4 proj = nav.proj;
-        update_anim_data(obj, dt * time_dir);
+        update_anim_data(obj, dt * time_dir * en_update);
 
         if(en_camera_locator)
         {
@@ -755,6 +761,7 @@ int main()
         glUniformMatrix4fv(glGetUniformLocation(program, "proj"), 1, GL_TRUE, proj.data);
         glUniformMatrix4fv(glGetUniformLocation(program, "view"), 1, GL_TRUE, view.data);
         glUniformMatrix4fv(glGetUniformLocation(program, "model"), 1, GL_TRUE, obj.model_tf.data);
+        assert(obj.mesh->bone_count <= MAX_BONES);
         glUniformMatrix4fv(glGetUniformLocation(program, "skinning_matrices"), obj.mesh->bone_count, GL_TRUE, obj.skinning_matrices[0].data);
         glUniform3fv(glGetUniformLocation(program, "eye_pos"), 1, &eye_pos.x);
         glBindVertexArray(obj.mesh->vao);
