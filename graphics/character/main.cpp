@@ -8,6 +8,317 @@
 #include "../glad.h"
 #include "../main.hpp"
 
+#define MAX_BONES 128
+
+static const char* src_vert_skel = R"(
+#version 330
+
+uniform mat4 view;
+uniform mat4 proj;
+uniform mat4 model;
+uniform mat4 skinning_matrices[128];
+
+layout(location = 0) in vec3 pos;
+layout(location = 1) in vec3 normal;
+layout(location = 2) in ivec4 bone_ids;
+layout(location = 3) in vec4 weights;
+
+// in world space
+out vec3 frag_pos;
+out vec3 frag_normal;
+
+void main()
+{
+    mat4 cp_from_bp = mat4(0);
+
+    for(int i = 0; i < 4; ++i)
+        cp_from_bp += skinning_matrices[bone_ids[i]] * weights[i];
+
+    mat4 cp_model = model * cp_from_bp;
+    vec4 pos_w = cp_model * vec4(pos, 1);
+    gl_Position = proj * view * pos_w;
+    frag_pos = vec3(pos_w);
+    frag_normal = mat3(cp_model) * normal;
+}
+)";
+
+struct Vertex2
+{
+    vec3 pos;
+    vec3 normal;
+    int bone_ids[4];
+    vec4 weights;
+};
+
+struct Mesh2
+{
+    Vertex2* vertices;
+    int vertex_count;
+    int* indices;
+    int index_count;
+    GLuint bo;
+    GLuint vao;
+    char** bone_names;
+    mat4* bone_f_bp_mesh;
+    int* bone_parent_ids;
+    int bone_count;
+    int ebo_offset;
+};
+
+struct BoneAction
+{
+    vec3* locs;
+    vec4* rots;
+    float* loc_time_coords;
+    float* rot_time_coords;
+    int loc_count;
+    int rot_count;
+};
+
+struct Action
+{
+    const char* name;
+    BoneAction* bone_actions;
+    int bone_count;
+    float duration;
+};
+
+void load2(const char* filename, Mesh2& mesh, std::vector<Action>& actions)
+{
+    mesh = {};
+    FILE* file = fopen(filename, "r");
+    assert(file);
+    char str_buf[256];
+    int r = fscanf(file, " format %s", str_buf);
+    assert(r == 1);
+
+    bool uvs = false;
+
+    if(strcmp(str_buf, "punbw") == 0)
+        uvs = true;
+
+    r = fscanf(file, " vertex_count %d", &mesh.vertex_count);
+    assert(r == 1);
+    mesh.vertices = (Vertex2*)malloc(mesh.vertex_count * sizeof(Vertex2));
+
+    for(int i = 0; i < mesh.vertex_count; ++i)
+    {
+        Vertex2& v = mesh.vertices[i];
+        r = fscanf(file, "%f %f %f", &v.pos.x, &v.pos.y, &v.pos.z);
+        assert(r == 3);
+
+        if(uvs)
+        {
+            vec2 dummy;
+            r = fscanf(file, "%f %f", &dummy.x, &dummy.y);
+            assert(r == 2);
+        }
+        r = fscanf(file, "%f %f %f", &v.normal.x, &v.normal.y, &v.normal.z);
+        assert(r == 3);
+
+        for(int i = 0; i < 4; ++i)
+        {
+            r = fscanf(file, "%d", v.bone_ids + i);
+            assert(r == 1);
+        }
+
+        for(int i = 0; i < 4; ++i)
+        {
+            r = fscanf(file, "%f", &v.weights[i]);
+            assert(r == 1);
+        }
+    }
+
+    r = fscanf(file, " index_count %d", &mesh.index_count);
+    assert(r == 1);
+    mesh.indices = (int*)malloc(mesh.index_count * sizeof(int));
+
+    for(int i = 0; i < mesh.index_count; ++i)
+    {
+        r = fscanf(file, "%d", mesh.indices + i);
+        assert(r == 1);
+    }
+
+    r = fscanf(file, " bone_count %d", &mesh.bone_count);
+    assert(r == 1);
+    mesh.bone_names = (char**)malloc(mesh.bone_count * sizeof(char*));
+    mesh.bone_parent_ids = (int*)malloc(mesh.bone_count * sizeof(int));
+    mesh.bone_f_bp_mesh = (mat4*)malloc(mesh.bone_count * sizeof(mat4));
+
+    for(int bone_id = 0; bone_id < mesh.bone_count; ++bone_id)
+    {
+        r = fscanf(file, " %s ", str_buf);
+        assert(r == 1);
+        mesh.bone_names[bone_id] = strdup(str_buf);
+        r = fscanf(file, "%d", mesh.bone_parent_ids + bone_id);
+        assert(r == 1);
+
+        for(int i = 0; i < 16; ++i)
+        {
+            r = fscanf(file, "%f", mesh.bone_f_bp_mesh[bone_id].data + i);
+            assert(r == 1);
+        }
+    }
+    int bone_count;
+    r = fscanf(file, " bone_count %d", &bone_count);
+    assert(r == 1);
+    int action_count;
+    r = fscanf(file, " action_count %d", &action_count);
+    assert(r == 1);
+
+    for(int _i = 0; _i < action_count; ++_i)
+    {
+        Action action;
+        action.bone_count = bone_count;
+        r = fscanf(file, " action_name %s", str_buf);
+        assert(r == 1);
+        action.name = strdup(str_buf);
+        action.bone_actions = (BoneAction*)malloc(action.bone_count * sizeof(BoneAction));
+
+        for(int bone_id = 0; bone_id < action.bone_count; ++bone_id)
+        {
+            BoneAction& ba = action.bone_actions[bone_id];
+            r = fscanf(file, " loc_count %d", &ba.loc_count);
+            assert(r == 1);
+            ba.locs = (vec3*)malloc(ba.loc_count * sizeof(vec3));
+            ba.loc_time_coords = (float*)malloc(ba.loc_count * sizeof(float));
+
+            for(int i = 0; i < ba.loc_count; ++i)
+            {
+                r = fscanf(file, "%f %f %f %f", &ba.locs[i].x, &ba.locs[i].y, &ba.locs[i].z, ba.loc_time_coords + i);
+                assert(r == 4);
+            }
+
+            r = fscanf(file, " rot_count %d", &ba.rot_count);
+            assert(r == 1);
+            ba.rots = (vec4*)malloc(ba.rot_count * sizeof(vec4));
+            ba.rot_time_coords = (float*)malloc(ba.rot_count * sizeof(float));
+
+            for(int i = 0; i < ba.rot_count; ++i)
+            {
+                r = fscanf(file, "%f %f %f %f %f", &ba.rots[i].x, &ba.rots[i].y, &ba.rots[i].z, &ba.rots[i].w, ba.rot_time_coords + i);
+                assert(r == 5);
+            }
+        }
+        assert(action.bone_count);
+        int i = action.bone_actions[0].loc_count - 1;
+        action.duration = action.bone_actions[0].loc_time_coords[i];
+        actions.push_back(action);
+    }
+
+    r = fscanf(file, " %s", str_buf);
+    assert(r == EOF);
+    fclose(file);
+
+    if(mesh.vertex_count == 0)
+        return;
+    mesh.ebo_offset = mesh.vertex_count * sizeof(Vertex2);
+    glGenBuffers(1, &mesh.bo);
+    glGenVertexArrays(1, &mesh.vao);
+    glBindVertexArray(mesh.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, mesh.bo);
+    glBufferData(GL_ARRAY_BUFFER, mesh.index_count * sizeof(int) + mesh.vertex_count * sizeof(Vertex2), nullptr, GL_STATIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, mesh.ebo_offset, mesh.vertices);
+    glBufferSubData(GL_ARRAY_BUFFER, mesh.ebo_offset, mesh.index_count * sizeof(int), mesh.indices);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(2);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex2), 0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex2), (void*)offsetof(Vertex2, normal));
+    glVertexAttribIPointer(2, 4, GL_INT, sizeof(Vertex2), (void*)offsetof(Vertex2, bone_ids));
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex2), (void*)offsetof(Vertex2, weights));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.bo);
+}
+
+struct AnimCtrl
+{
+    // output
+    mat4 model_tf;
+    mat4* skinning_mats;
+    mat4* cp_model_f_bone;
+    // state
+    Mesh2* mesh;
+    Action* action;
+    mat4 adjust_tf;
+    vec3 model_dir;
+    float action_time;
+    float jump_angle;
+};
+
+void init(AnimCtrl& ctrl)
+{
+    ctrl = {};
+    ctrl.skinning_mats = (mat4*)malloc(MAX_BONES * sizeof(mat4));
+    ctrl.cp_model_f_bone = (mat4*)malloc(MAX_BONES * sizeof(mat4));
+}
+
+void update_anim_data(AnimCtrl& ctrl, float dt)
+{
+    if(!ctrl.action)
+    {
+        for(int i = 0; i < ctrl.mesh->bone_count; ++i)
+        {
+            ctrl.skinning_mats[i] = identity4();
+            ctrl.cp_model_f_bone[i] = invert_coord_change(ctrl.mesh->bone_f_bp_mesh[i]);
+        }
+        return;
+    }
+    assert(ctrl.mesh->bone_count == ctrl.action->bone_count);
+    ctrl.action_time += dt;
+    float dur = ctrl.action->duration;
+
+    if(ctrl.action_time > dur)
+        ctrl.action_time = min(dur, ctrl.action_time - dur);
+    else if(ctrl.action_time < 0)
+        ctrl.action_time = max(0, ctrl.action_time + dur);
+
+    for(int bone_id = 0; bone_id < ctrl.mesh->bone_count; ++bone_id)
+    {
+        BoneAction& action = ctrl.action->bone_actions[bone_id];
+        int loc_id = 0;
+        int rot_id = 0;
+
+        while(ctrl.action_time > action.loc_time_coords[loc_id + 1])
+            loc_id += 1;
+
+        while(ctrl.action_time > action.rot_time_coords[rot_id + 1])
+            rot_id += 1;
+
+        assert(loc_id < action.loc_count - 1);
+        assert(rot_id < action.rot_count - 1);
+        float loc_lhs_t = action.loc_time_coords[loc_id];
+        float loc_rhs_t = action.loc_time_coords[loc_id + 1];
+        float rot_lhs_t = action.rot_time_coords[rot_id];
+        float rot_rhs_t = action.rot_time_coords[rot_id + 1];
+        float loc_t = (ctrl.action_time - loc_lhs_t) / (loc_rhs_t - loc_lhs_t);
+        float rot_t = (ctrl.action_time - rot_lhs_t) / (rot_rhs_t - rot_lhs_t);
+        vec3 loc_lhs = action.locs[loc_id];
+        vec3 loc_rhs = action.locs[loc_id + 1];
+        vec4 rot_lhs = action.rots[rot_id];
+        vec4 rot_rhs = action.rots[rot_id + 1];
+
+        // interpolate through the shorter path
+        if(dot(rot_lhs, rot_rhs) < 0)
+            rot_lhs = -1 * rot_lhs;
+
+        vec3 loc = ((1 - loc_t) * loc_lhs) + (loc_t * loc_rhs);
+        vec4 rot = ((1 - rot_t) * rot_lhs) + (rot_t * rot_rhs);
+        rot = normalize(rot); // linear interpolation does not preserve length (quat_to_mat4() requires a unit quaternion)
+        mat4 parent_f_bone = translate(loc) * quat_to_mat4(rot);
+        mat4 cp_model_f_parent = identity4();
+
+        if(bone_id > 0)
+        {
+            int pid = ctrl.mesh->bone_parent_ids[bone_id];
+            assert(pid < bone_id);
+            cp_model_f_parent = ctrl.cp_model_f_bone[pid];
+        }
+        ctrl.cp_model_f_bone[bone_id] = cp_model_f_parent * parent_f_bone;
+        ctrl.skinning_mats[bone_id] = ctrl.cp_model_f_bone[bone_id] * ctrl.mesh->bone_f_bp_mesh[bone_id];
+    }
+}
+
 static const char* _vert = R"(
 #version 330
 
@@ -667,11 +978,19 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e)
     }
 }
 
+struct CharStatus
+{
+    bool ground;
+    bool update_jump_angle;
+};
+
 #define CIRP_EPS (pi/60)
 #define RAY_EPS 0.3
 
-void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
+CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
 {
+    CharStatus status;
+
     // character update
 
     bool turn_mode = !ctrl.rmb_down && !ctrl.mmb_down;
@@ -725,8 +1044,15 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
 
     if(!sti.valid)
     {
-        if(!ctrl.vel.x && !ctrl.vel.z)
+        status.ground = false;
+
+        if(!ctrl.vel.x && !ctrl.vel.z && length(vel))
+        {
             ctrl.vel = ctrl.vel + 0.5 * vel;
+            status.update_jump_angle = true;
+        }
+        else
+            status.update_jump_angle = false;
 
         vec3 acc = {0, -9.8 * 20, 0};
         vec3 init_pos = ctrl.pos;
@@ -740,6 +1066,7 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     }
     else
     {
+        status.ground = true;
         if(ctrl.jump_action)
             vel = vel + 80 * vec3{0,1,0};
 
@@ -817,6 +1144,12 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     ctrl.view = lookat(ctrl.eye_pos, -view_dir);
     ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
     ctrl.jump_action = false;
+    return status;
+}
+
+mat4 gl_from_blender()
+{
+    return rotate_x(-pi/2);
 }
 
 int main()
@@ -834,6 +1167,7 @@ int main()
         assert(false);
 
     GLuint prog = create_program(_vert, _frag);
+    GLuint skel_prog = create_program(src_vert_skel, _frag);
 
     Controller ctrl;
     {
@@ -863,6 +1197,17 @@ int main()
         obj.scale = 0.5 * obj.scale;
         objects.push_back(obj);
     }
+    Mesh2 char_mesh;
+    std::vector<Action> char_actions;
+    load2("/home/mat/Downloads/blender-2.83.0-linux64/anim_third", char_mesh, char_actions);
+    assert(char_mesh.vertex_count);
+    assert(char_actions.size());
+    AnimCtrl actrl;
+    init(actrl);
+    actrl.mesh = &char_mesh;
+    actrl.action = &char_actions[1];
+    actrl.adjust_tf = scale(vec3{8,8,8}) * gl_from_blender();
+    actrl.model_dir = ctrl.forward;
 
     Uint64 prev_counter = SDL_GetPerformanceCounter();
     bool quit = false;
@@ -883,7 +1228,7 @@ int main()
         dt = min(dt, 0.030); // debugging
         prev_counter = current_counter;
 
-        ctrl_resolve_events(ctrl, dt, meshes[0]);
+        CharStatus status = ctrl_resolve_events(ctrl, dt, meshes[0]);
 
         objects[1].pos = ctrl.pos;
         objects[2].pos = objects[1].pos + 2 * ctrl.forward;
@@ -893,10 +1238,14 @@ int main()
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_CULL_FACE);
-
         glEnable(GL_DEPTH_TEST);
-        glUseProgram(prog);
+
+        GLuint progs[] = {prog, skel_prog};
+
+        for(GLuint prog: progs)
         {
+
+            glUseProgram(prog);
             vec3 light_intensity = {1,1,1};
             vec3 light_dir = normalize(vec3{0.3,1,0});
             vec3 specular_color = {0.2, 0.2, 0.2};
@@ -918,6 +1267,8 @@ int main()
             glUniform3fv(specular_color_loc, 1, &specular_color.x);
             glUniform1f(specular_exp_loc, 50);
         }
+
+        glUseProgram(prog);
 
         for(int i = 0; i < (int)objects.size(); ++i)
         {
@@ -943,6 +1294,143 @@ int main()
 
             glDrawArrays(GL_TRIANGLES, 0, obj.mesh->vertex_count);
         }
+
+        // character model
+        {
+            // update model_dir
+
+            assert(ctrl.forward.y == 0);
+            assert(actrl.model_dir.y == 0);
+            float ang_vel = 2*pi/0.4;
+            float max_angle_disp = ang_vel * dt;
+            vec3 vel = vec3{ctrl.vel.x, 0, ctrl.vel.z};
+
+            if(status.ground)
+            {
+                if(length(vel) == 0)
+                {
+                    actrl.jump_angle = 0;
+                    float angle = atan2f(ctrl.forward.x, ctrl.forward.z) - atan2f(actrl.model_dir.x, actrl.model_dir.z);
+                    float sign = angle < 0 ? -1 : 1;
+                    float abs_angle = sign * angle;
+
+                    if(abs_angle > pi)
+                    {
+                        abs_angle = 2*pi - abs_angle;
+                        sign *= -1;
+                    }
+
+                    if(ctrl.rmb_down)
+                    {
+                        if(abs_angle > pi/2)
+                            actrl.model_dir = transform3(rotate_y(-sign * pi/2), ctrl.forward);
+                    }
+                    else
+                    {
+                        angle = sign * min(max_angle_disp, abs_angle);
+                        actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+                    }
+                }
+                else
+                {
+                    vec3 target_dir = normalize(vel);
+
+                    if(dot(target_dir, ctrl.forward) + 0.1 < 0)
+                        target_dir = -1 * target_dir;
+
+                    // this is a fix for a character turning the wrong way when the angle is pi
+                    {
+                        float angle = atan2f(ctrl.forward.x, ctrl.forward.z) - atan2f(target_dir.x, target_dir.z);
+                        float sign = angle < 0 ? -1 : 1;
+                        float abs_angle = sign * angle;
+
+                        if(abs_angle > pi)
+                            angle = -1 * sign * (2*pi - abs_angle);
+
+                        target_dir = transform3(rotate_y(angle/100), target_dir);
+                        assert(dot(ctrl.forward, target_dir) > 0);
+                        actrl.jump_angle = -angle;
+                    }
+
+                    float angle = atan2f(target_dir.x, target_dir.z) - atan2f(actrl.model_dir.x, actrl.model_dir.z);
+                    float sign = angle < 0 ? -1 : 1;
+                    float abs_angle = sign * angle;
+
+                    if(abs_angle > pi)
+                    {
+                        abs_angle = 2*pi - abs_angle;
+                        sign *= -1;
+                    }
+                    angle = sign * min(abs_angle, max_angle_disp);
+                    actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+                }
+            }
+            else
+            {
+                vec3 target_dir;
+
+                if(status.update_jump_angle)
+                {
+                    assert(length(vel));
+                    target_dir = normalize(vec3{ctrl.vel.x, 0, ctrl.vel.z});
+
+                    if(dot(target_dir, ctrl.forward) + 0.1 < 0)
+                        target_dir = -1 * target_dir;
+
+                    float angle = atan2f(ctrl.forward.x, ctrl.forward.z) - atan2f(target_dir.x, target_dir.z);
+                    float sign = angle < 0 ? -1 : 1;
+                    float abs_angle = sign * angle;
+
+                    if(abs_angle > pi)
+                        angle = -1 * sign * (2*pi - abs_angle);
+                    actrl.jump_angle = -angle;
+                }
+                else
+                    target_dir = transform3(rotate_y(actrl.jump_angle), ctrl.forward);
+
+                float angle = atan2f(target_dir.x, target_dir.z) - atan2f(actrl.model_dir.x, actrl.model_dir.z);
+                float sign = angle < 0 ? -1 : 1;
+                float abs_angle = sign * angle;
+
+                if(abs_angle > pi)
+                {
+                    abs_angle = 2*pi - abs_angle;
+                    sign *= -1;
+                }
+                angle = sign * min(abs_angle, max_angle_disp);
+                actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+            }
+
+            // set shader matrices and render
+
+            vec3 up = {0,1,0};
+            assert(dot(actrl.model_dir, up) == 0);
+            vec3 right = cross(actrl.model_dir, up);
+            mat4 basis = {};
+            basis.data[15] = 1;
+            basis.data[0] = right.x;
+            basis.data[1] = up.x;
+            basis.data[2] = actrl.model_dir.x;
+            basis.data[4] = right.y;
+            basis.data[5] = up.y;
+            basis.data[6] = actrl.model_dir.y;
+            basis.data[8] = right.z;
+            basis.data[9] = up.z;
+            basis.data[10] = actrl.model_dir.z;
+
+            actrl.model_tf = translate(ctrl.pos) * basis * actrl.adjust_tf;
+            update_anim_data(actrl, dt);
+            vec3 diffuse_color = {0,0.5,0};
+            glCullFace(GL_FRONT); // basis matrix changes the winding order
+            glUseProgram(skel_prog);
+            glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
+            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
+            assert(actrl.mesh->bone_count <= MAX_BONES);
+            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "skinning_matrices"), actrl.mesh->bone_count, GL_TRUE, actrl.skinning_mats[0].data);
+            glBindVertexArray(actrl.mesh->vao);
+            glDrawElements(GL_TRIANGLES, actrl.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)actrl.mesh->ebo_offset); // suppress warning
+        }
+
         SDL_GL_SwapWindow(window);
     }
     SDL_Quit();
