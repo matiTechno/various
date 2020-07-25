@@ -930,7 +930,13 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
         }
         bool all_up = !ctrl.lmb_down && !ctrl.rmb_down && !ctrl.mmb_down;
 
-        if(all_up && SDL_GetRelativeMouseMode() == SDL_TRUE)
+        if(!all_up && SDL_GetRelativeMouseMode() == SDL_FALSE)
+        {
+            // fix for SDL changing cursor position in a relative mode
+            ctrl.cursor_pos = vec2{(float)e.button.x, (float)e.button.y};
+            SDL_SetRelativeMouseMode(SDL_TRUE);
+        }
+        else if(all_up && SDL_GetRelativeMouseMode() == SDL_TRUE)
         {
             SDL_SetRelativeMouseMode(SDL_FALSE);
             SDL_WarpMouseInWindow(window, ctrl.cursor_pos.x, ctrl.cursor_pos.y);
@@ -949,14 +955,6 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
     {
         if(!ctrl.lmb_down && !ctrl.rmb_down && !ctrl.mmb_down)
             break;
-
-        if(SDL_GetRelativeMouseMode() == SDL_FALSE)
-        {
-            // fix for SDL changing cursor position in a relative mode
-            ctrl.cursor_pos = vec2{(float)e.motion.x, (float)e.motion.y};
-            SDL_SetRelativeMouseMode(SDL_TRUE);
-        }
-
         float dx = 2*pi * (float)e.motion.xrel / ctrl.win_size.x;
         float dy = 2*pi * (float)e.motion.yrel / ctrl.win_size.y;
         ctrl.pitch += dy;
@@ -1451,7 +1449,6 @@ int main()
             actrl.model_tf = translate(ctrl.pos) * rotate_y(sign * abs_angle) * actrl.adjust_tf;
             update_anim_data(actrl, dt);
             vec3 diffuse_color = {0,0.5,0};
-            //glCullFace(GL_FRONT); // basis matrix changes the winding order
             glUseProgram(skel_prog);
             glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
             glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
