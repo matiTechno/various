@@ -237,6 +237,7 @@ struct AnimCtrl
     mat4 model_tf;
     mat4* skinning_mats;
     mat4* cp_model_f_bone;
+    mat4* add_bone_rots;
     // state
     Mesh2* mesh;
     Action* action;
@@ -249,8 +250,13 @@ struct AnimCtrl
 void init(AnimCtrl& ctrl)
 {
     ctrl = {};
-    ctrl.skinning_mats = (mat4*)malloc(MAX_BONES * sizeof(mat4));
-    ctrl.cp_model_f_bone = (mat4*)malloc(MAX_BONES * sizeof(mat4));
+    int size = MAX_BONES * sizeof(mat4);
+    ctrl.skinning_mats = (mat4*)malloc(size);
+    ctrl.cp_model_f_bone = (mat4*)malloc(size);
+    ctrl.add_bone_rots = (mat4*)malloc(size);
+
+    for(int i = 0; i < MAX_BONES; ++i)
+        ctrl.add_bone_rots[i] = identity4();
 }
 
 void update_anim_data(AnimCtrl& ctrl, float dt)
@@ -305,7 +311,7 @@ void update_anim_data(AnimCtrl& ctrl, float dt)
         vec3 loc = ((1 - loc_t) * loc_lhs) + (loc_t * loc_rhs);
         vec4 rot = ((1 - rot_t) * rot_lhs) + (rot_t * rot_rhs);
         rot = normalize(rot); // linear interpolation does not preserve length (quat_to_mat4() requires a unit quaternion)
-        mat4 parent_f_bone = translate(loc) * quat_to_mat4(rot);
+        mat4 parent_f_bone = translate(loc) * quat_to_mat4(rot) * ctrl.add_bone_rots[bone_id];
         mat4 cp_model_f_parent = identity4();
 
         if(bone_id > 0)
@@ -838,6 +844,7 @@ float intersect_level(CirPoint cirp, Mesh& level)
 struct Controller
 {
     vec3 pos;
+    vec3 orbit_offset;
     vec3 forward;
     vec3 vel;
     float radius;
@@ -848,6 +855,7 @@ struct Controller
     float dist_vel;
     float pitch;
     float yaw;
+    vec2 cursor_pos;
     vec2 win_size;
     bool lmb_down;
     bool rmb_down;
@@ -864,9 +872,10 @@ struct Controller
     mat4 proj;
 };
 
-void ctrl_init(Controller& ctrl, float win_width, float win_height)
+void ctrl_init(Controller& ctrl, float win_width, float win_height, vec3 orbit_offset)
 {
     ctrl.pos = vec3{50,100,0};
+    ctrl.orbit_offset = orbit_offset;
     ctrl.forward = vec3{0,0,-1};
     ctrl.vel = {};
     ctrl.radius = 1.2;
@@ -890,7 +899,7 @@ void ctrl_init(Controller& ctrl, float win_width, float win_height)
     ctrl.jump_action = false;
 }
 
-void ctrl_process_event(Controller& ctrl, SDL_Event& e)
+void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
 {
     switch(e.type)
     {
@@ -911,16 +920,20 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e)
         {
         case SDL_BUTTON_LEFT:
             ctrl.lmb_down = down;
-            SDL_SetRelativeMouseMode((SDL_bool)down);
             break;
         case SDL_BUTTON_RIGHT:
             ctrl.rmb_down = down;
-            SDL_SetRelativeMouseMode((SDL_bool)down);
             break;
         case SDL_BUTTON_MIDDLE:
             ctrl.mmb_down = down;
-            SDL_SetRelativeMouseMode((SDL_bool)down);
             break;
+        }
+        bool all_up = !ctrl.lmb_down && !ctrl.rmb_down && !ctrl.mmb_down;
+
+        if(all_up && SDL_GetRelativeMouseMode() == SDL_TRUE)
+        {
+            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_WarpMouseInWindow(window, ctrl.cursor_pos.x, ctrl.cursor_pos.y);
         }
         break;
     }
@@ -936,6 +949,14 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e)
     {
         if(!ctrl.lmb_down && !ctrl.rmb_down && !ctrl.mmb_down)
             break;
+
+        if(SDL_GetRelativeMouseMode() == SDL_FALSE)
+        {
+            // fix for SDL changing cursor position in a relative mode
+            ctrl.cursor_pos = vec2{(float)e.motion.x, (float)e.motion.y};
+            SDL_SetRelativeMouseMode(SDL_TRUE);
+        }
+
         float dx = 2*pi * (float)e.motion.xrel / ctrl.win_size.x;
         float dy = 2*pi * (float)e.motion.yrel / ctrl.win_size.y;
         ctrl.pitch += dy;
@@ -1098,20 +1119,21 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     vec3 eye_right = cross(vec3{0,1,0}, eye_dir_xz);
     vec3 eye_dir;
     float hit_dist = FLT_MAX;
+    vec3 orbit_center = ctrl.pos + ctrl.orbit_offset;
 
     if(ctrl.pitch < 0)
     {
         CirPoint cirp;
         cirp.b1 = eye_dir_xz;
         cirp.b2 = vec3{0,1,0};
-        cirp.center = ctrl.pos;
+        cirp.center = orbit_center;
         cirp.R = ctrl.current_dist;
         float t_cirp = intersect_level(cirp, level);
         bool eye_hit = t_cirp + CIRP_EPS >= ctrl.pitch;
         vec3 eye_pos = eye_hit ? cirp.get(t_cirp + CIRP_EPS) : cirp.get(ctrl.pitch);
-        hit_dist = length(eye_pos - ctrl.pos);
-        eye_dir = normalize(eye_pos - ctrl.pos);
-        float t_ray = intersect_level(Ray{ctrl.pos, eye_dir}, level);
+        hit_dist = length(eye_pos - orbit_center);
+        eye_dir = normalize(eye_pos - orbit_center);
+        float t_ray = intersect_level(Ray{orbit_center, eye_dir}, level);
 
         if(t_ray > 0 && t_ray - RAY_EPS < hit_dist)
             hit_dist = max(ctrl.min_dist, t_ray - RAY_EPS);
@@ -1119,7 +1141,7 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     else
     {
         eye_dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
-        float t = intersect_level(Ray{ctrl.pos, eye_dir}, level);
+        float t = intersect_level(Ray{orbit_center, eye_dir}, level);
 
         if(t > 0)
             hit_dist = max(ctrl.min_dist, t - RAY_EPS);
@@ -1139,7 +1161,7 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     else
         ctrl.current_dist = max(lim_dist, new_dist);
 
-    ctrl.eye_pos = ctrl.pos + ctrl.current_dist * eye_dir;
+    ctrl.eye_pos = orbit_center + ctrl.current_dist * eye_dir;
     vec3 view_dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
     ctrl.view = lookat(ctrl.eye_pos, -view_dir);
     ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
@@ -1150,6 +1172,19 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
 mat4 gl_from_blender()
 {
     return rotate_x(-pi/2);
+}
+
+void rot_diff_y(vec3 lhs, vec3 rhs, float& sign, float& abs_angle)
+{
+    float angle = atan2f(lhs.x, lhs.z) - atan2f(rhs.x, rhs.z);
+    sign = angle < 0 ? -1 : 1;
+    abs_angle = sign * angle;
+
+    if(abs_angle > pi)
+    {
+        abs_angle = 2*pi - abs_angle;
+        sign *= -1;
+    }
 }
 
 int main()
@@ -1173,7 +1208,7 @@ int main()
     {
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
-        ctrl_init(ctrl, width, height);
+        ctrl_init(ctrl, width, height, vec3{0,10,0});
     }
 
     std::vector<Mesh> meshes;
@@ -1196,6 +1231,9 @@ int main()
         // forward indicator
         obj.scale = 0.5 * obj.scale;
         objects.push_back(obj);
+        // camera orbit indicator
+        obj.scale = 0.8 * obj.scale;
+        //objects.push_back(obj);
     }
     Mesh2 char_mesh;
     std::vector<Action> char_actions;
@@ -1220,7 +1258,7 @@ int main()
         {
             if(event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE))
                 quit = true;
-            ctrl_process_event(ctrl, event);
+            ctrl_process_event(ctrl, event, window);
         }
 
         Uint64 current_counter = SDL_GetPerformanceCounter();
@@ -1232,6 +1270,7 @@ int main()
 
         objects[1].pos = ctrl.pos;
         objects[2].pos = objects[1].pos + 2 * ctrl.forward;
+        objects[3].pos = ctrl.pos + ctrl.orbit_offset;
 
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
@@ -1281,6 +1320,8 @@ int main()
                 diffuse_color = vec3{1,0,0};
             else if(i == 2)
                 diffuse_color = vec3{0,1,0};
+            else if(i == 3)
+                diffuse_color = vec3{1,0,1};
 
             mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
             glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
@@ -1310,15 +1351,8 @@ int main()
                 if(length(vel) == 0)
                 {
                     actrl.jump_angle = 0;
-                    float angle = atan2f(ctrl.forward.x, ctrl.forward.z) - atan2f(actrl.model_dir.x, actrl.model_dir.z);
-                    float sign = angle < 0 ? -1 : 1;
-                    float abs_angle = sign * angle;
-
-                    if(abs_angle > pi)
-                    {
-                        abs_angle = 2*pi - abs_angle;
-                        sign *= -1;
-                    }
+                    float abs_angle, sign;
+                    rot_diff_y(ctrl.forward, actrl.model_dir, sign, abs_angle);
 
                     if(ctrl.rmb_down)
                     {
@@ -1327,7 +1361,7 @@ int main()
                     }
                     else
                     {
-                        angle = sign * min(max_angle_disp, abs_angle);
+                        float angle = sign * min(max_angle_disp, abs_angle);
                         actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
                     }
                 }
@@ -1340,28 +1374,17 @@ int main()
 
                     // this is a fix for a character turning the wrong way when the angle is pi
                     {
-                        float angle = atan2f(ctrl.forward.x, ctrl.forward.z) - atan2f(target_dir.x, target_dir.z);
-                        float sign = angle < 0 ? -1 : 1;
-                        float abs_angle = sign * angle;
-
-                        if(abs_angle > pi)
-                            angle = -1 * sign * (2*pi - abs_angle);
-
+                        float sign, abs_angle;
+                        rot_diff_y(ctrl.forward, target_dir, sign, abs_angle);
+                        float angle = sign * abs_angle;
                         target_dir = transform3(rotate_y(angle/100), target_dir);
                         assert(dot(ctrl.forward, target_dir) > 0);
                         actrl.jump_angle = -angle;
                     }
 
-                    float angle = atan2f(target_dir.x, target_dir.z) - atan2f(actrl.model_dir.x, actrl.model_dir.z);
-                    float sign = angle < 0 ? -1 : 1;
-                    float abs_angle = sign * angle;
-
-                    if(abs_angle > pi)
-                    {
-                        abs_angle = 2*pi - abs_angle;
-                        sign *= -1;
-                    }
-                    angle = sign * min(abs_angle, max_angle_disp);
+                    float sign, abs_angle;
+                    rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
+                    float angle = sign * min(abs_angle, max_angle_disp);
                     actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
                 }
             }
@@ -1377,51 +1400,58 @@ int main()
                     if(dot(target_dir, ctrl.forward) + 0.1 < 0)
                         target_dir = -1 * target_dir;
 
-                    float angle = atan2f(ctrl.forward.x, ctrl.forward.z) - atan2f(target_dir.x, target_dir.z);
-                    float sign = angle < 0 ? -1 : 1;
-                    float abs_angle = sign * angle;
-
-                    if(abs_angle > pi)
-                        angle = -1 * sign * (2*pi - abs_angle);
-                    actrl.jump_angle = -angle;
+                    float sign, abs_angle;
+                    rot_diff_y(target_dir, ctrl.forward, sign, abs_angle);
+                    actrl.jump_angle = sign * abs_angle;
                 }
                 else
                     target_dir = transform3(rotate_y(actrl.jump_angle), ctrl.forward);
 
-                float angle = atan2f(target_dir.x, target_dir.z) - atan2f(actrl.model_dir.x, actrl.model_dir.z);
-                float sign = angle < 0 ? -1 : 1;
-                float abs_angle = sign * angle;
-
-                if(abs_angle > pi)
-                {
-                    abs_angle = 2*pi - abs_angle;
-                    sign *= -1;
-                }
-                angle = sign * min(abs_angle, max_angle_disp);
+                float sign, abs_angle;
+                rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
+                float angle = sign * min(abs_angle, max_angle_disp);
                 actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
             }
 
+            // update bones additional rotation
+
+            {
+                int spine1_id = 0;
+                int neck_id = 0;
+
+                for(int i = 1; i < actrl.mesh->bone_count; ++i)
+                {
+                    if(strcmp(actrl.mesh->bone_names[i], "spine1") == 0)
+                    {
+                        spine1_id = i;
+
+                        if(neck_id)
+                            break;
+                    }
+                    else if(strcmp(actrl.mesh->bone_names[i], "neck") == 0)
+                    {
+                        neck_id = i;
+
+                        if(spine1_id)
+                            break;
+                    }
+                }
+                assert(spine1_id);
+                assert(neck_id);
+                float sign, abs_angle;
+                rot_diff_y(ctrl.forward, actrl.model_dir, sign, abs_angle);
+                float angle = sign * abs_angle;
+                actrl.add_bone_rots[spine1_id] = rotate_y(angle * 0.5);
+                actrl.add_bone_rots[neck_id] = rotate_y(angle * 0.25);
+            }
+
             // set shader matrices and render
-
-            vec3 up = {0,1,0};
-            assert(dot(actrl.model_dir, up) == 0);
-            vec3 right = cross(actrl.model_dir, up);
-            mat4 basis = {};
-            basis.data[15] = 1;
-            basis.data[0] = right.x;
-            basis.data[1] = up.x;
-            basis.data[2] = actrl.model_dir.x;
-            basis.data[4] = right.y;
-            basis.data[5] = up.y;
-            basis.data[6] = actrl.model_dir.y;
-            basis.data[8] = right.z;
-            basis.data[9] = up.z;
-            basis.data[10] = actrl.model_dir.z;
-
-            actrl.model_tf = translate(ctrl.pos) * basis * actrl.adjust_tf;
+            float sign, abs_angle;
+            rot_diff_y(actrl.model_dir, vec3{0,0,1}, sign, abs_angle);
+            actrl.model_tf = translate(ctrl.pos) * rotate_y(sign * abs_angle) * actrl.adjust_tf;
             update_anim_data(actrl, dt);
             vec3 diffuse_color = {0,0.5,0};
-            glCullFace(GL_FRONT); // basis matrix changes the winding order
+            //glCullFace(GL_FRONT); // basis matrix changes the winding order
             glUseProgram(skel_prog);
             glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
             glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
