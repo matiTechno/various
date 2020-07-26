@@ -255,6 +255,38 @@ mat4 operator*(mat4 lhs, mat4 rhs)
 }
 
 inline
+mat3 operator+(mat3 lhs, mat3 rhs)
+{
+    for(int i = 0; i < 9; ++i)
+        lhs.data[i] += rhs.data[i];
+    return lhs;
+}
+
+inline
+mat4 operator+(mat4 lhs, mat4 rhs)
+{
+    for(int i = 0; i < 16; ++i)
+        lhs.data[i] += rhs.data[i];
+    return lhs;
+}
+
+inline
+mat3 operator*(float sc, mat3 mat)
+{
+    for(int i = 0; i < 9; ++i)
+        mat.data[i] *= sc;
+    return mat;
+}
+
+inline
+mat4 operator*(float sc, mat4 mat)
+{
+    for(int i = 0; i < 16; ++i)
+        mat.data[i] *= sc;
+    return mat;
+}
+
+inline
 mat3 transpose(mat3 lhs)
 {
     mat3 t;

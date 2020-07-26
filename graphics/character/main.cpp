@@ -231,20 +231,36 @@ void load2(const char* filename, Mesh2& mesh, std::vector<Action>& actions)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.bo);
 }
 
+enum ActionState
+{
+    AS_IDLE,
+    AS_RUN,
+    AS_RUN_BACK,
+    AS_JUMP,
+    AS_FALL,
+    AS_LAND,
+    AS_COUNT,
+};
+
 struct AnimCtrl
 {
     // output
     mat4 model_tf;
     mat4* skinning_mats;
     mat4* cp_model_f_bone;
-    mat4* add_bone_rots;
     // state
+    mat4* skinning_mats_prev;
+    mat4* add_bone_rots;
     Mesh2* mesh;
-    Action* action;
     mat4 adjust_tf;
     vec3 model_dir;
+    vec3 vel_xz;
     float action_time;
     float jump_angle;
+    float jump_time;
+    ActionState state;
+    Action* actions[AS_COUNT];
+    float blend_time;
 };
 
 void init(AnimCtrl& ctrl)
@@ -252,6 +268,7 @@ void init(AnimCtrl& ctrl)
     ctrl = {};
     int size = MAX_BONES * sizeof(mat4);
     ctrl.skinning_mats = (mat4*)malloc(size);
+    ctrl.skinning_mats_prev = (mat4*)malloc(size);
     ctrl.cp_model_f_bone = (mat4*)malloc(size);
     ctrl.add_bone_rots = (mat4*)malloc(size);
 
@@ -259,20 +276,11 @@ void init(AnimCtrl& ctrl)
         ctrl.add_bone_rots[i] = identity4();
 }
 
-void update_anim_data(AnimCtrl& ctrl, float dt)
+void update_anim_data(AnimCtrl& ctrl)
 {
-    if(!ctrl.action)
-    {
-        for(int i = 0; i < ctrl.mesh->bone_count; ++i)
-        {
-            ctrl.skinning_mats[i] = identity4();
-            ctrl.cp_model_f_bone[i] = invert_coord_change(ctrl.mesh->bone_f_bp_mesh[i]);
-        }
-        return;
-    }
-    assert(ctrl.mesh->bone_count == ctrl.action->bone_count);
-    ctrl.action_time += dt;
-    float dur = ctrl.action->duration;
+    Action& _action = *(ctrl.actions[ctrl.state]);
+    assert(ctrl.mesh->bone_count == _action.bone_count);
+    float dur = _action.duration;
 
     if(ctrl.action_time > dur)
         ctrl.action_time = min(dur, ctrl.action_time - dur);
@@ -281,7 +289,7 @@ void update_anim_data(AnimCtrl& ctrl, float dt)
 
     for(int bone_id = 0; bone_id < ctrl.mesh->bone_count; ++bone_id)
     {
-        BoneAction& action = ctrl.action->bone_actions[bone_id];
+        BoneAction& action = _action.bone_actions[bone_id];
         int loc_id = 0;
         int rot_id = 0;
 
@@ -997,19 +1005,11 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
     }
 }
 
-struct CharStatus
-{
-    bool ground;
-    bool update_jump_angle;
-};
-
 #define CIRP_EPS (pi/60)
 #define RAY_EPS 0.3
 
-CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
+void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
 {
-    CharStatus status;
-
     // character update
 
     bool turn_mode = !ctrl.rmb_down && !ctrl.mmb_down;
@@ -1060,18 +1060,12 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     // slide down on steep slopes, steeper than the given angle
     float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
     STI sti = intersect_level(ctrl.radius, ctrl.pos, ctrl.pos + vec3{0,-max_offset_y,0}, level);
+    ground = sti.valid;
 
     if(!sti.valid)
     {
-        status.ground = false;
-
         if(!ctrl.vel.x && !ctrl.vel.z && length(vel))
-        {
             ctrl.vel = ctrl.vel + 0.5 * vel;
-            status.update_jump_angle = true;
-        }
-        else
-            status.update_jump_angle = false;
 
         vec3 acc = {0, -9.8 * 20, 0};
         vec3 init_pos = ctrl.pos;
@@ -1085,7 +1079,6 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     }
     else
     {
-        status.ground = true;
         if(ctrl.jump_action)
             vel = vel + 80 * vec3{0,1,0};
 
@@ -1164,7 +1157,6 @@ CharStatus ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level)
     ctrl.view = lookat(ctrl.eye_pos, -view_dir);
     ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
     ctrl.jump_action = false;
-    return status;
 }
 
 mat4 gl_from_blender()
@@ -1182,6 +1174,224 @@ void rot_diff_y(vec3 lhs, vec3 rhs, float& sign, float& abs_angle)
     {
         abs_angle = 2*pi - abs_angle;
         sign *= -1;
+    }
+}
+
+struct AnimInput
+{
+    vec3 pos;
+    vec3 forward;
+    vec3 vel;
+    bool rmb_down;
+    bool ground;
+    float dt;
+};
+
+#define BLEND_DUR 0.2
+
+void update_anim_controller(AnimCtrl& actrl, AnimInput in)
+{
+    // update model_dir
+
+    assert(in.forward.y == 0);
+    assert(actrl.model_dir.y == 0);
+    vec3 vel_xz = {in.vel.x, 0, in.vel.z};
+    float dt = in.dt;
+    float ang_vel = (actrl.state == AS_LAND || actrl.state == AS_IDLE) ? 2*pi/2 : 2*pi/0.5; // slower turn on landing and idle
+    float max_angle_disp = ang_vel * dt;
+    bool jump_action = false;
+    bool run_back = false;
+
+    if(in.ground)
+    {
+        actrl.jump_time = dt;
+        jump_action = in.vel.y; // in.ground is true on a frame when character jumps
+
+        if(length(vel_xz) == 0)
+        {
+            actrl.jump_angle = 0;
+            float abs_angle, sign;
+            rot_diff_y(in.forward, actrl.model_dir, sign, abs_angle);
+
+            if(in.rmb_down)
+            {
+                if(abs_angle > pi/2)
+                    actrl.model_dir = transform3(rotate_y(-sign * pi/2), in.forward);
+            }
+            else
+            {
+                float angle = sign * min(max_angle_disp, abs_angle);
+                actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+            }
+        }
+        else
+        {
+            vec3 target_dir = normalize(vel_xz);
+
+            if(dot(target_dir, in.forward) + 0.1 < 0)
+            {
+                target_dir = -1 * target_dir;
+                run_back = true;
+            }
+
+            {
+                float sign, abs_angle;
+                rot_diff_y(in.forward, target_dir, sign, abs_angle);
+                float angle = sign * abs_angle;
+                actrl.jump_angle = -angle;
+                // this is needed for the next part to work when angles are close to pi/2
+                target_dir = transform3(rotate_y(angle/100), target_dir);
+            }
+            float sign, sign2, abs_angle, abs_angle2;
+            rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
+            rot_diff_y(in.forward, actrl.model_dir, sign2, abs_angle2);
+
+            if(abs_angle2 >= pi/2 && sign2 != sign)
+            {
+                sign *= -1;
+                abs_angle = 2*pi - abs_angle;
+            }
+            float angle = sign * min(abs_angle, max_angle_disp);
+            actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+        }
+    }
+    else
+    {
+        actrl.jump_time += dt;
+        vec3 target_dir;
+
+        if(length(actrl.vel_xz) == 0 && length(vel_xz)) // update jump angle
+        {
+            target_dir = normalize(vel_xz);
+
+            if(dot(target_dir, in.forward) + 0.1 < 0)
+                target_dir = -1 * target_dir;
+
+            float sign, abs_angle;
+            rot_diff_y(target_dir, in.forward, sign, abs_angle);
+            actrl.jump_angle = sign * abs_angle;
+        }
+        else
+            target_dir = transform3(rotate_y(actrl.jump_angle), in.forward);
+
+        float sign, abs_angle;
+        rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
+        float angle = sign * min(abs_angle, max_angle_disp);
+        actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+    }
+
+    actrl.vel_xz = vel_xz;
+
+    // update procedural bone rotations
+    {
+        int spine1_id = 0;
+        int neck_id = 0;
+
+        for(int i = 1; i < actrl.mesh->bone_count; ++i)
+        {
+            if(strcmp(actrl.mesh->bone_names[i], "spine1") == 0)
+            {
+                spine1_id = i;
+
+                if(neck_id)
+                    break;
+            }
+            else if(strcmp(actrl.mesh->bone_names[i], "neck") == 0)
+            {
+                neck_id = i;
+
+                if(spine1_id)
+                    break;
+            }
+        }
+        assert(spine1_id);
+        assert(neck_id);
+        float sign, abs_angle;
+        rot_diff_y(in.forward, actrl.model_dir, sign, abs_angle);
+        float angle = sign * abs_angle;
+        actrl.add_bone_rots[spine1_id] = rotate_y(angle * 0.5);
+        actrl.add_bone_rots[neck_id] = rotate_y(angle * 0.25);
+    }
+
+    // update action state
+
+    actrl.action_time += dt;
+    actrl.blend_time += dt;
+    ActionState next = actrl.state;
+    bool reset_time = true;
+
+    switch(actrl.state)
+    {
+    case AS_IDLE:
+    case AS_RUN:
+    case AS_RUN_BACK:
+    case AS_LAND:
+        if(jump_action)
+            next = AS_JUMP;
+        else if(actrl.jump_time > 0.5)
+            next = AS_FALL;
+        else if(length(vel_xz))
+            next = run_back ? AS_RUN_BACK : AS_RUN;
+        else if(actrl.state == AS_LAND)
+        {
+            if(actrl.action_time > actrl.actions[actrl.state]->duration)
+            {
+                next = AS_IDLE;
+                reset_time = false;
+            }
+        }
+        else
+            next = AS_IDLE;
+        break;
+    case AS_JUMP:
+    case AS_FALL:
+        if(jump_action)
+            next = AS_JUMP;
+        else if(in.ground && length(vel_xz))
+            next = run_back ? AS_RUN_BACK : AS_RUN;
+        else if(in.ground)
+            next = AS_LAND;
+        else if(actrl.state == AS_JUMP && (actrl.action_time > actrl.actions[actrl.state]->duration))
+        {
+            next = AS_FALL;
+            reset_time = false;
+        }
+        break;
+    default:
+        assert(false);
+    }
+
+    if(next != actrl.state)
+    {
+        if(reset_time)
+        {
+            actrl.action_time = 0;
+            actrl.blend_time = 0;
+        }
+        else
+        {
+            actrl.action_time -= actrl.actions[actrl.state]->duration;
+            assert(actrl.blend_time >= BLEND_DUR);
+        }
+
+        if(actrl.blend_time < BLEND_DUR)
+            memcpy(actrl.skinning_mats_prev, actrl.skinning_mats, actrl.mesh->bone_count * sizeof(mat4));
+        actrl.state = next;
+    }
+
+    // update shader matrices
+
+    float sign, abs_angle;
+    rot_diff_y(actrl.model_dir, vec3{0,0,1}, sign, abs_angle);
+    actrl.model_tf = translate(in.pos) * rotate_y(sign * abs_angle) * actrl.adjust_tf;
+    update_anim_data(actrl);
+
+    if(actrl.blend_time < BLEND_DUR)
+    {
+        float t = actrl.blend_time / BLEND_DUR;
+
+        for(int i = 0; i < actrl.mesh->bone_count; ++i)
+            actrl.skinning_mats[i] = ((1-t) * actrl.skinning_mats_prev[i]) + (t * actrl.skinning_mats[i]);
     }
 }
 
@@ -1241,9 +1451,35 @@ int main()
     AnimCtrl actrl;
     init(actrl);
     actrl.mesh = &char_mesh;
-    actrl.action = &char_actions[1];
     actrl.adjust_tf = scale(vec3{8,8,8}) * gl_from_blender();
     actrl.model_dir = ctrl.forward;
+    actrl.state = AS_IDLE;
+    actrl.blend_time = BLEND_DUR;
+
+    for(int i = 0; i < (int)char_actions.size(); ++i)
+    {
+        Action* action = char_actions.data() + i;
+        ActionState state = AS_COUNT;
+
+        if(strcmp(action->name, "idle") == 0)
+            state = AS_IDLE;
+        else if(strcmp(action->name, "run") == 0)
+            state = AS_RUN;
+        else if(strcmp(action->name, "run_back") == 0)
+            state = AS_RUN_BACK;
+        else if(strcmp(action->name, "jump") == 0)
+            state = AS_JUMP;
+        else if(strcmp(action->name, "fall") == 0)
+            state = AS_FALL;
+        else if(strcmp(action->name, "land") == 0)
+            state = AS_LAND;
+
+        if(state != AS_COUNT)
+            actrl.actions[state] = action;
+    }
+
+    for(Action* action: actrl.actions)
+        assert(action);
 
     Uint64 prev_counter = SDL_GetPerformanceCounter();
     bool quit = false;
@@ -1264,19 +1500,27 @@ int main()
         dt = min(dt, 0.030); // debugging
         prev_counter = current_counter;
 
-        CharStatus status = ctrl_resolve_events(ctrl, dt, meshes[0]);
+        AnimInput anim_in;
+
+        ctrl_resolve_events(ctrl, dt, meshes[0], anim_in.ground);
+
+        anim_in.pos = ctrl.pos;
+        anim_in.forward = ctrl.forward;
+        anim_in.vel = ctrl.vel;
+        anim_in.rmb_down = ctrl.rmb_down;
+        anim_in.dt = dt;
+
+        update_anim_controller(actrl, anim_in);
 
         objects[1].pos = ctrl.pos;
         objects[2].pos = objects[1].pos + 2 * ctrl.forward;
         objects[3].pos = ctrl.pos + ctrl.orbit_offset;
-
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
-
         GLuint progs[] = {prog, skel_prog};
 
         for(GLuint prog: progs)
@@ -1335,129 +1579,15 @@ int main()
         }
 
         // character model
-        {
-            // update model_dir
 
-            assert(ctrl.forward.y == 0);
-            assert(actrl.model_dir.y == 0);
-            float ang_vel = 2*pi/0.4;
-            float max_angle_disp = ang_vel * dt;
-            vec3 vel = vec3{ctrl.vel.x, 0, ctrl.vel.z};
-
-            if(status.ground)
-            {
-                if(length(vel) == 0)
-                {
-                    actrl.jump_angle = 0;
-                    float abs_angle, sign;
-                    rot_diff_y(ctrl.forward, actrl.model_dir, sign, abs_angle);
-
-                    if(ctrl.rmb_down)
-                    {
-                        if(abs_angle > pi/2)
-                            actrl.model_dir = transform3(rotate_y(-sign * pi/2), ctrl.forward);
-                    }
-                    else
-                    {
-                        float angle = sign * min(max_angle_disp, abs_angle);
-                        actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
-                    }
-                }
-                else
-                {
-                    vec3 target_dir = normalize(vel);
-
-                    if(dot(target_dir, ctrl.forward) + 0.1 < 0)
-                        target_dir = -1 * target_dir;
-
-                    // this is a fix for a character turning the wrong way when the angle is pi
-                    {
-                        float sign, abs_angle;
-                        rot_diff_y(ctrl.forward, target_dir, sign, abs_angle);
-                        float angle = sign * abs_angle;
-                        target_dir = transform3(rotate_y(angle/100), target_dir);
-                        assert(dot(ctrl.forward, target_dir) > 0);
-                        actrl.jump_angle = -angle;
-                    }
-
-                    float sign, abs_angle;
-                    rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
-                    float angle = sign * min(abs_angle, max_angle_disp);
-                    actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
-                }
-            }
-            else
-            {
-                vec3 target_dir;
-
-                if(status.update_jump_angle)
-                {
-                    assert(length(vel));
-                    target_dir = normalize(vec3{ctrl.vel.x, 0, ctrl.vel.z});
-
-                    if(dot(target_dir, ctrl.forward) + 0.1 < 0)
-                        target_dir = -1 * target_dir;
-
-                    float sign, abs_angle;
-                    rot_diff_y(target_dir, ctrl.forward, sign, abs_angle);
-                    actrl.jump_angle = sign * abs_angle;
-                }
-                else
-                    target_dir = transform3(rotate_y(actrl.jump_angle), ctrl.forward);
-
-                float sign, abs_angle;
-                rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
-                float angle = sign * min(abs_angle, max_angle_disp);
-                actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
-            }
-
-            // update bones additional rotation
-
-            {
-                int spine1_id = 0;
-                int neck_id = 0;
-
-                for(int i = 1; i < actrl.mesh->bone_count; ++i)
-                {
-                    if(strcmp(actrl.mesh->bone_names[i], "spine1") == 0)
-                    {
-                        spine1_id = i;
-
-                        if(neck_id)
-                            break;
-                    }
-                    else if(strcmp(actrl.mesh->bone_names[i], "neck") == 0)
-                    {
-                        neck_id = i;
-
-                        if(spine1_id)
-                            break;
-                    }
-                }
-                assert(spine1_id);
-                assert(neck_id);
-                float sign, abs_angle;
-                rot_diff_y(ctrl.forward, actrl.model_dir, sign, abs_angle);
-                float angle = sign * abs_angle;
-                actrl.add_bone_rots[spine1_id] = rotate_y(angle * 0.5);
-                actrl.add_bone_rots[neck_id] = rotate_y(angle * 0.25);
-            }
-
-            // set shader matrices and render
-            float sign, abs_angle;
-            rot_diff_y(actrl.model_dir, vec3{0,0,1}, sign, abs_angle);
-            actrl.model_tf = translate(ctrl.pos) * rotate_y(sign * abs_angle) * actrl.adjust_tf;
-            update_anim_data(actrl, dt);
-            vec3 diffuse_color = {0,0.5,0};
-            glUseProgram(skel_prog);
-            glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
-            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
-            assert(actrl.mesh->bone_count <= MAX_BONES);
-            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "skinning_matrices"), actrl.mesh->bone_count, GL_TRUE, actrl.skinning_mats[0].data);
-            glBindVertexArray(actrl.mesh->vao);
-            glDrawElements(GL_TRIANGLES, actrl.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)actrl.mesh->ebo_offset); // suppress warning
-        }
-
+        vec3 diffuse_color = {0,0.5,0};
+        glUseProgram(skel_prog);
+        glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
+        glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
+        assert(actrl.mesh->bone_count <= MAX_BONES);
+        glUniformMatrix4fv(glGetUniformLocation(skel_prog, "skinning_matrices"), actrl.mesh->bone_count, GL_TRUE, actrl.skinning_mats[0].data);
+        glBindVertexArray(actrl.mesh->vao);
+        glDrawElements(GL_TRIANGLES, actrl.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)actrl.mesh->ebo_offset); // suppress warning
         SDL_GL_SwapWindow(window);
     }
     SDL_Quit();
