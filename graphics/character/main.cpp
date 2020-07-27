@@ -276,27 +276,37 @@ void init(AnimCtrl& ctrl)
         ctrl.add_bone_rots[i] = identity4();
 }
 
-void update_anim_data(AnimCtrl& ctrl)
+struct UpdateBoneInput
 {
-    Action& _action = *(ctrl.actions[ctrl.state]);
-    assert(ctrl.mesh->bone_count == _action.bone_count);
-    float dur = _action.duration;
+    Mesh2* mesh;
+    Action* action;
+    mat4* skinning_mats;
+    mat4* cp_model_f_bone;
+    mat4* add_bone_rots; // can be nullptr
+    float* action_time;
+};
 
-    if(ctrl.action_time > dur)
-        ctrl.action_time = min(dur, ctrl.action_time - dur);
-    else if(ctrl.action_time < 0)
-        ctrl.action_time = max(0, ctrl.action_time + dur);
+void update_bone_data(UpdateBoneInput in)
+{
+    float time = *in.action_time;
+    float dur = in.action->duration;
+    assert(in.mesh->bone_count == in.action->bone_count);
 
-    for(int bone_id = 0; bone_id < ctrl.mesh->bone_count; ++bone_id)
+    if(time > dur)
+        time = min(dur, time - dur);
+    else if(time < 0)
+        time = max(0, time + dur);
+
+    for(int bone_id = 0; bone_id < in.mesh->bone_count; ++bone_id)
     {
-        BoneAction& action = _action.bone_actions[bone_id];
+        BoneAction& action = in.action->bone_actions[bone_id];
         int loc_id = 0;
         int rot_id = 0;
 
-        while(ctrl.action_time > action.loc_time_coords[loc_id + 1])
+        while(time > action.loc_time_coords[loc_id + 1])
             loc_id += 1;
 
-        while(ctrl.action_time > action.rot_time_coords[rot_id + 1])
+        while(time > action.rot_time_coords[rot_id + 1])
             rot_id += 1;
 
         assert(loc_id < action.loc_count - 1);
@@ -305,8 +315,8 @@ void update_anim_data(AnimCtrl& ctrl)
         float loc_rhs_t = action.loc_time_coords[loc_id + 1];
         float rot_lhs_t = action.rot_time_coords[rot_id];
         float rot_rhs_t = action.rot_time_coords[rot_id + 1];
-        float loc_t = (ctrl.action_time - loc_lhs_t) / (loc_rhs_t - loc_lhs_t);
-        float rot_t = (ctrl.action_time - rot_lhs_t) / (rot_rhs_t - rot_lhs_t);
+        float loc_t = (time - loc_lhs_t) / (loc_rhs_t - loc_lhs_t);
+        float rot_t = (time - rot_lhs_t) / (rot_rhs_t - rot_lhs_t);
         vec3 loc_lhs = action.locs[loc_id];
         vec3 loc_rhs = action.locs[loc_id + 1];
         vec4 rot_lhs = action.rots[rot_id];
@@ -319,18 +329,20 @@ void update_anim_data(AnimCtrl& ctrl)
         vec3 loc = ((1 - loc_t) * loc_lhs) + (loc_t * loc_rhs);
         vec4 rot = ((1 - rot_t) * rot_lhs) + (rot_t * rot_rhs);
         rot = normalize(rot); // linear interpolation does not preserve length (quat_to_mat4() requires a unit quaternion)
-        mat4 parent_f_bone = translate(loc) * quat_to_mat4(rot) * ctrl.add_bone_rots[bone_id];
+        mat4 parent_f_bone = in.add_bone_rots ? translate(loc) * quat_to_mat4(rot) * in.add_bone_rots[bone_id] :
+            translate(loc) * quat_to_mat4(rot);
         mat4 cp_model_f_parent = identity4();
 
         if(bone_id > 0)
         {
-            int pid = ctrl.mesh->bone_parent_ids[bone_id];
+            int pid = in.mesh->bone_parent_ids[bone_id];
             assert(pid < bone_id);
-            cp_model_f_parent = ctrl.cp_model_f_bone[pid];
+            cp_model_f_parent = in.cp_model_f_bone[pid];
         }
-        ctrl.cp_model_f_bone[bone_id] = cp_model_f_parent * parent_f_bone;
-        ctrl.skinning_mats[bone_id] = ctrl.cp_model_f_bone[bone_id] * ctrl.mesh->bone_f_bp_mesh[bone_id];
+        in.cp_model_f_bone[bone_id] = cp_model_f_parent * parent_f_bone;
+        in.skinning_mats[bone_id] = in.cp_model_f_bone[bone_id] * in.mesh->bone_f_bp_mesh[bone_id];
     }
+    *in.action_time = time;
 }
 
 static const char* _vert = R"(
@@ -875,6 +887,7 @@ struct Controller
     bool q_down;
     bool e_down;
     bool jump_action;
+    bool change_mode_action;
     vec3 eye_pos;
     mat4 view;
     mat4 proj;
@@ -905,6 +918,7 @@ void ctrl_init(Controller& ctrl, float win_width, float win_height, vec3 orbit_o
     ctrl.q_down = false;
     ctrl.e_down = false;
     ctrl.jump_action = false;
+    ctrl.change_mode_action = false;
 }
 
 void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
@@ -957,6 +971,9 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
         float scale = e.wheel.y < 0 ? powf(base, -e.wheel.y) : (1 / powf(base, e.wheel.y));
         ctrl.target_dist = max(ctrl.min_dist, min(ctrl.max_dist, ctrl.target_dist * scale));
         ctrl.dist_vel = (ctrl.target_dist - ctrl.current_dist) / DIST_INTERP_TIME;
+
+        if(ctrl.target_dist == ctrl.min_dist)
+            ctrl.change_mode_action = true;
         break;
     }
     case SDL_MOUSEMOTION:
@@ -997,7 +1014,8 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
             ctrl.e_down = down;
             break;
         case SDLK_SPACE:
-            ctrl.jump_action = down;
+            if(down)
+                ctrl.jump_action = true;
             break;
         }
         break;
@@ -1010,8 +1028,6 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
 
 void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
 {
-    // character update
-
     bool turn_mode = !ctrl.rmb_down && !ctrl.mmb_down;
     float turn_angle = 0;
 
@@ -1035,6 +1051,8 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
         ctrl.forward = transform3(rotate_y(ctrl.yaw), ctrl.forward);
         ctrl.yaw = 0;
     }
+
+    // collider update
 
     vec3 move_dir = {};
     assert(ctrl.forward.y == 0);
@@ -1157,6 +1175,19 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
     ctrl.view = lookat(ctrl.eye_pos, -view_dir);
     ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
     ctrl.jump_action = false;
+
+    if(ctrl.change_mode_action)
+    {
+        ctrl.lmb_down = false;
+        ctrl.rmb_down = false;
+        ctrl.mmb_down = false;
+        ctrl.w_down = false;
+        ctrl.s_down = false;
+        ctrl.a_down = false;
+        ctrl.d_down = false;
+        ctrl.q_down = false;
+        ctrl.e_down = false;
+    }
 }
 
 mat4 gl_from_blender()
@@ -1177,7 +1208,7 @@ void rot_diff_y(vec3 lhs, vec3 rhs, float& sign, float& abs_angle)
     }
 }
 
-struct AnimInput
+struct AnimCtrlInput
 {
     vec3 pos;
     vec3 forward;
@@ -1189,7 +1220,7 @@ struct AnimInput
 
 #define BLEND_DUR 0.2
 
-void update_anim_controller(AnimCtrl& actrl, AnimInput in)
+void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
 {
     // update model_dir
 
@@ -1384,7 +1415,16 @@ void update_anim_controller(AnimCtrl& actrl, AnimInput in)
     float sign, abs_angle;
     rot_diff_y(actrl.model_dir, vec3{0,0,1}, sign, abs_angle);
     actrl.model_tf = translate(in.pos) * rotate_y(sign * abs_angle) * actrl.adjust_tf;
-    update_anim_data(actrl);
+
+    UpdateBoneInput ubin;
+    ubin.mesh = actrl.mesh;
+    ubin.action = actrl.actions[actrl.state];
+    ubin.skinning_mats = actrl.skinning_mats;
+    ubin.cp_model_f_bone = actrl.cp_model_f_bone;
+    ubin.add_bone_rots = actrl.add_bone_rots;
+    ubin.action_time = &actrl.action_time;
+
+    update_bone_data(ubin);
 
     if(actrl.blend_time < BLEND_DUR)
     {
@@ -1392,6 +1432,418 @@ void update_anim_controller(AnimCtrl& actrl, AnimInput in)
 
         for(int i = 0; i < actrl.mesh->bone_count; ++i)
             actrl.skinning_mats[i] = ((1-t) * actrl.skinning_mats_prev[i]) + (t * actrl.skinning_mats[i]);
+    }
+}
+
+enum FpsState
+{
+    FPS_IDLE,
+    FPS_AIM,
+    FPS_WALK,
+    FPS_START_AIM,
+    FPS_END_AIM,
+    FPS_SHOOT,
+    FPS_SHOOT_AIM,
+    FPS_RELOAD,
+    FPS_COUNT,
+};
+
+struct FpsCtrl
+{
+    Action* actions[FPS_COUNT];
+    mat4 proj;
+    mat4 view;
+    mat4 model_tf;
+    mat4 adjust_tf;
+    vec3 eye_pos;
+    vec3 forward_xz;
+    vec3 pos;
+    vec3 vel;
+    vec2 win_size;
+    mat4* skinning_mats;
+    mat4* skinning_mats_prev;
+    mat4* cp_model_f_bone;
+    Mesh2* mesh;
+    FpsState state;
+    float blend_time;
+    float jump_time;
+    float action_time;
+    float radius;
+    float pitch;
+    float yaw;
+    float shoot_action_pitch;
+    float shoot_action_yaw;
+    bool w_down;
+    bool s_down;
+    bool a_down;
+    bool d_down;
+    bool jump_action;
+    bool reload_action;
+    bool shoot_action;
+    bool aim_action;
+    bool change_mode_action;
+};
+
+// much of the relevant state is set during transition from a third person view
+
+void fps_init(FpsCtrl& fps, float radius)
+{
+    fps = {};
+    int size = MAX_BONES * sizeof(mat4);
+    fps.skinning_mats = (mat4*)malloc(size);
+    fps.skinning_mats_prev = (mat4*)malloc(size);
+    fps.cp_model_f_bone = (mat4*)malloc(size);
+    fps.state = FPS_IDLE;
+    fps.blend_time = BLEND_DUR;
+    fps.radius = radius;
+    fps.w_down = false;
+    fps.s_down = false;
+    fps.a_down = false;
+    fps.d_down = false;
+    fps.jump_action = false;
+    fps.reload_action = false;
+    fps.shoot_action = false;
+    fps.aim_action = false;
+    fps.change_mode_action = false;
+}
+
+void fps_process_event(FpsCtrl& fps, SDL_Event& e)
+{
+    switch(e.type)
+    {
+    case SDL_WINDOWEVENT:
+    {
+        if(e.window.event != SDL_WINDOWEVENT_SIZE_CHANGED)
+            break;
+        fps.win_size.x = e.window.data1;
+        fps.win_size.y = e.window.data2;
+        break;
+    }
+    case SDL_MOUSEBUTTONDOWN:
+    {
+        if(e.button.button == SDL_BUTTON_LEFT)
+        {
+            fps.shoot_action = true;
+            fps.shoot_action_pitch = fps.pitch;
+            fps.shoot_action_yaw = fps.yaw;
+        }
+        else if(e.button.button == SDL_BUTTON_RIGHT)
+            fps.aim_action = true;
+        break;
+    }
+    case SDL_MOUSEWHEEL:
+    {
+        if(e.wheel.y < 0)
+            fps.change_mode_action = true;
+        break;
+    }
+    case SDL_MOUSEMOTION:
+    {
+        float dx = 1.5*pi * (float)e.motion.xrel / fps.win_size.x;
+        float dy = 1.5*pi * (float)e.motion.yrel / fps.win_size.y;
+        fps.yaw -= dx;
+        fps.pitch -= dy;
+        fps.pitch = min(fps.pitch, deg_to_rad(85));
+        fps.pitch = max(fps.pitch, deg_to_rad(-85));
+        break;
+    }
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+    {
+        bool down = e.type == SDL_KEYDOWN;
+
+        switch(e.key.keysym.sym)
+        {
+        case SDLK_w:
+            fps.w_down = down;
+            break;
+        case SDLK_s:
+            fps.s_down = down;
+            break;
+        case SDLK_a:
+            fps.a_down = down;
+            break;
+        case SDLK_d:
+            fps.d_down = down;
+            break;
+        case SDLK_SPACE:
+            if(down)
+                fps.jump_action = true;
+            break;
+        case SDLK_r:
+            if(down)
+                fps.reload_action = true;
+            break;
+        }
+        break;
+    }
+    }
+}
+
+void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hit_pos)
+{
+    // collider update
+
+    vec3 move_fwd = transform3(rotate_y(fps.yaw), vec3{0,0,1});
+    vec3 move_dir = {};
+    assert(move_fwd.y == 0);
+    vec3 move_right = cross(move_fwd, vec3{0,1,0});
+
+    if(fps.w_down)
+        move_dir = move_dir + move_fwd;
+    if(fps.s_down)
+        move_dir = move_dir - move_fwd;
+    if(fps.a_down)
+        move_dir = move_dir - move_right;
+    if(fps.d_down)
+        move_dir = move_dir + move_right;
+
+    if(dot(move_dir, move_dir))
+        move_dir = normalize(move_dir);
+
+    vec3 vel = 20 * move_dir;
+
+    if(dot(move_dir, move_fwd) + 0.01 < 0)
+        vel = 0.5 * vel;
+
+    float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
+    STI sti = intersect_level(fps.radius, fps.pos, fps.pos + vec3{0,-max_offset_y,0}, level);
+
+    if(!sti.valid)
+    {
+        fps.jump_time += dt;
+
+        if(!fps.vel.x && !fps.vel.z && length(vel))
+            fps.vel = fps.vel + 0.5 * vel;
+
+        vec3 acc = {0, -9.8 * 20, 0};
+        vec3 init_pos = fps.pos;
+        vec3 new_pos = init_pos + (dt * fps.vel) + (0.5 * dt * dt * acc);
+        fps.pos = slide(fps.radius, init_pos, new_pos, level);
+
+        if(fps.vel.y > 0 && (fps.pos.y - init_pos.y < new_pos.y - init_pos.y))
+            fps.vel.y = 0;
+
+        fps.vel = fps.vel + dt * acc;
+    }
+    else
+    {
+        fps.jump_time = dt;
+
+        if(fps.jump_action)
+            vel = vel + 80 * vec3{0,1,0};
+
+        fps.pos = slide(fps.radius, fps.pos, fps.pos + dt * vel, level);
+
+        // snap mechanic
+        if(!fps.jump_action && length(vel))
+        {
+            STI sti = intersect_level(fps.radius, fps.pos, fps.pos + vec3{0,-0.5f*fps.radius,0}, level);
+
+            if(sti.valid)
+                fps.pos = get_offset_pos(fps.radius, sti.point, level);
+        }
+        fps.vel = vel;
+    }
+
+    // camera, model update
+    // note: animation stuff is quite rough right now
+
+    fps.action_time += dt;
+    fps.blend_time += dt;
+    FpsState next = fps.state;
+    vec3 vel_xz = {fps.vel.x, 0, fps.vel.z};
+    float dur = fps.actions[fps.state]->duration;
+    bool idle_cond = fps.jump_time > 0.5 || !length(vel_xz);
+    bool shot = false;
+    // relevant only when next != state
+    bool reset_time = true;
+    bool enable_blend = true;
+
+    switch(fps.state)
+    {
+    case FPS_IDLE:
+    case FPS_WALK:
+        if(fps.reload_action)
+            next = FPS_RELOAD;
+        else if(fps.aim_action)
+            next = FPS_START_AIM;
+        // todo: shooting while walking requires more advanced blending code to look good (e.g. partial blending)
+        else if(fps.shoot_action && fps.state == FPS_IDLE)
+            next = FPS_SHOOT;
+        else
+            next = idle_cond ? FPS_IDLE : FPS_WALK;
+        break;
+
+    case FPS_RELOAD:
+        if(dur - fps.action_time < BLEND_DUR)
+            next = idle_cond ? FPS_IDLE : FPS_WALK;
+        break;
+
+    case FPS_AIM:
+        if(fps.shoot_action)
+            next = FPS_SHOOT_AIM;
+        else if(fps.aim_action)
+            next = FPS_END_AIM;
+
+        enable_blend = false;
+        break;
+
+    case FPS_START_AIM:
+    case FPS_END_AIM:
+        if(fps.aim_action)
+        {
+            next = fps.state == FPS_START_AIM ? FPS_END_AIM : FPS_START_AIM;
+            fps.action_time = dur - (fps.action_time - dt);
+            assert(fps.action_time > 0);
+            reset_time = false;
+            enable_blend = false;
+        }
+        else if(dur - fps.action_time < BLEND_DUR)
+        {
+            if(fps.state == FPS_START_AIM)
+            {
+                if(fps.shoot_action)
+                    next = FPS_SHOOT_AIM;
+                else
+                    next = FPS_AIM;
+            }
+            else if(fps.reload_action)
+                next = FPS_RELOAD;
+            else if(fps.shoot_action)
+                next = FPS_SHOOT;
+            else
+                next = idle_cond ? FPS_IDLE : FPS_WALK;
+        }
+        break;
+
+    case FPS_SHOOT:
+    case FPS_SHOOT_AIM:
+        if(fps.shoot_action && fps.action_time > 0.2)
+        {
+            fps.action_time = 0;
+            shot = true;
+            fps.yaw += deg_to_rad(-0.2);
+            fps.pitch += deg_to_rad(0.5);
+        }
+        else if(fps.aim_action)
+        {
+            next = fps.state == FPS_SHOOT ? FPS_START_AIM : FPS_END_AIM;
+        }
+        else if(fps.action_time > 0.2 && fps.state == FPS_SHOOT && fps.reload_action)
+        {
+            next = FPS_RELOAD;
+        }
+        else if(fps.action_time > dur)
+        {
+            // animations are synchonized
+            fps.action_time = fps.action_time - dur;
+            reset_time = false;
+            enable_blend = false;
+
+            if(fps.state == FPS_SHOOT)
+                next = idle_cond ? FPS_IDLE : FPS_WALK;
+            else
+                next = FPS_AIM;
+        }
+        break;
+
+    default:
+        assert(false);
+    }
+
+    if(next != fps.state)
+    {
+        shot = next == FPS_SHOOT || next == FPS_SHOOT_AIM;
+
+        if(shot)
+            enable_blend = false;
+
+        fps.state = next;
+
+        if(reset_time)
+            fps.action_time = 0;
+
+        if(enable_blend)
+        {
+            fps.blend_time = 0;
+            memcpy(fps.skinning_mats_prev, fps.skinning_mats, fps.mesh->bone_count * sizeof(mat4));
+        }
+    }
+
+    UpdateBoneInput ubin;
+    ubin.mesh = fps.mesh;
+    ubin.action = fps.actions[fps.state];
+    ubin.skinning_mats = fps.skinning_mats;
+    ubin.cp_model_f_bone = fps.cp_model_f_bone;
+    ubin.add_bone_rots = nullptr;
+    ubin.action_time = &fps.action_time;
+
+    update_bone_data(ubin);
+
+    if(fps.blend_time < BLEND_DUR)
+    {
+        float t = fps.blend_time / BLEND_DUR;
+
+        for(int i = 0; i < fps.mesh->bone_count; ++i)
+            fps.skinning_mats[i] = ((1-t) * fps.skinning_mats_prev[i]) + (t * fps.skinning_mats[i]);
+    }
+
+    int locator_id = 0;
+
+    for(int i = 1; i < fps.mesh->bone_count; ++i)
+    {
+        if(strcmp("camera_locator", fps.mesh->bone_names[i]) == 0)
+        {
+            locator_id = i;
+            break;
+        }
+    }
+
+    assert(locator_id);
+    vec3 rot_origin = transform3(fps.adjust_tf * fps.cp_model_f_bone[locator_id], vec3{0,0,0});
+    fps.forward_xz = transform3(rotate_y(fps.yaw), vec3{0,0,1});
+    vec3 right = cross(fps.forward_xz, vec3{0,1,0});
+    fps.model_tf = translate(fps.pos + rot_origin) * rotate_axis(right, fps.pitch) * rotate_y(fps.yaw) * translate(-rot_origin) * fps.adjust_tf;
+    mat4 world_f_view = fps.model_tf * fps.cp_model_f_bone[locator_id];
+    fps.eye_pos = vec3{world_f_view.data[3], world_f_view.data[7], world_f_view.data[11]};
+
+    // invert_coord_change doesn't work with nonorthogonal matrices (scale != 1) and inverse() for mat4 is not implemented
+    // todo:
+    {
+        vec3 pos, scale;
+        mat4 rot;
+        decompose(world_f_view, pos, rot, scale);
+        fps.view = invert_coord_change(translate(pos) * rot);
+    }
+    fps.proj = perspective(50, fps.win_size.x / fps.win_size.y, 0.1, 1000);
+    fps.jump_action = false;
+    fps.reload_action = false;
+    fps.shoot_action = false;
+    fps.aim_action = false;
+
+    if(fps.change_mode_action)
+    {
+        fps.w_down = false;
+        fps.s_down = false;
+        fps.a_down = false;
+        fps.d_down = false;
+    }
+
+    hit = false;
+
+    if(shot)
+    {
+        Ray ray;
+        ray.pos = fps.eye_pos;
+        ray.dir = normalize(-1 * vec3{world_f_view.data[2], world_f_view.data[6], world_f_view.data[10]});
+        float t = intersect_level(ray, level);
+
+        if(t >= 0)
+        {
+            hit = true;
+            hit_pos = ray.pos + t * ray.dir;
+        }
     }
 }
 
@@ -1441,7 +1893,7 @@ int main()
         objects.push_back(obj);
         // camera orbit indicator
         obj.scale = 0.8 * obj.scale;
-        //objects.push_back(obj);
+        objects.push_back(obj);
     }
     Mesh2 char_mesh;
     std::vector<Action> char_actions;
@@ -1481,8 +1933,48 @@ int main()
     for(Action* action: actrl.actions)
         assert(action);
 
+    FpsCtrl fps;
+    fps_init(fps, ctrl.radius);
+    fps.adjust_tf = actrl.adjust_tf;
+    Mesh2 fps_mesh;
+    std::vector<Action> fps_actions;
+    load2("/home/mat/Downloads/blender-2.83.0-linux64/anim_fps", fps_mesh, fps_actions);
+    assert(fps_mesh.vertex_count);
+    assert(fps_actions.size());
+    fps.mesh = &fps_mesh;
+
+    for(int i = 0; i < (int)fps_actions.size(); ++i)
+    {
+        Action* action = fps_actions.data() + i;
+        FpsState state = FPS_COUNT;
+
+        if(strcmp(action->name, "idle") == 0)
+            state = FPS_IDLE;
+        else if(strcmp(action->name, "aim") == 0)
+            state = FPS_AIM;
+        else if(strcmp(action->name, "walk") == 0)
+            state = FPS_WALK;
+        else if(strcmp(action->name, "start_aim") == 0)
+            state = FPS_START_AIM;
+        else if(strcmp(action->name, "end_aim") == 0)
+            state = FPS_END_AIM;
+        else if(strcmp(action->name, "shoot") == 0)
+            state = FPS_SHOOT;
+        else if(strcmp(action->name, "shoot_aim") == 0)
+            state = FPS_SHOOT_AIM;
+        else if(strcmp(action->name, "reload") == 0)
+            state = FPS_RELOAD;
+
+        if(state != FPS_COUNT)
+            fps.actions[state] = action;
+    }
+
+    for(Action* action: fps.actions)
+        assert(action);
+
     Uint64 prev_counter = SDL_GetPerformanceCounter();
     bool quit = false;
+    bool ctrl_mode = true;
 
     while(!quit)
     {
@@ -1492,7 +1984,11 @@ int main()
         {
             if(event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE))
                 quit = true;
-            ctrl_process_event(ctrl, event, window);
+
+            if(ctrl_mode)
+                ctrl_process_event(ctrl, event, window);
+            else
+                fps_process_event(fps, event);
         }
 
         Uint64 current_counter = SDL_GetPerformanceCounter();
@@ -1500,20 +1996,85 @@ int main()
         dt = min(dt, 0.030); // debugging
         prev_counter = current_counter;
 
-        AnimInput anim_in;
+        mat4 view;
+        mat4 proj;
+        vec3 forward;
+        vec3 eye_pos;
+        vec3 char_pos;
+        bool render_thirdp = true;
 
-        ctrl_resolve_events(ctrl, dt, meshes[0], anim_in.ground);
+        if(ctrl_mode)
+        {
+            AnimCtrlInput anim_in;
 
-        anim_in.pos = ctrl.pos;
-        anim_in.forward = ctrl.forward;
-        anim_in.vel = ctrl.vel;
-        anim_in.rmb_down = ctrl.rmb_down;
-        anim_in.dt = dt;
+            ctrl_resolve_events(ctrl, dt, meshes[0], anim_in.ground);
 
-        update_anim_controller(actrl, anim_in);
+            anim_in.pos = ctrl.pos;
+            anim_in.forward = ctrl.forward;
+            anim_in.vel = ctrl.vel;
+            anim_in.rmb_down = ctrl.rmb_down;
+            anim_in.dt = dt;
+            update_anim_controller(actrl, anim_in);
 
-        objects[1].pos = ctrl.pos;
-        objects[2].pos = objects[1].pos + 2 * ctrl.forward;
+            view = ctrl.view;
+            proj = ctrl.proj;
+            forward = ctrl.forward;
+            eye_pos = ctrl.eye_pos;
+            char_pos = ctrl.pos;
+
+            if(ctrl.change_mode_action)
+            {
+                ctrl.change_mode_action = false;
+                ctrl_mode = false;
+                // update fps controller
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+                fps.pos = ctrl.pos;
+                fps.vel = ctrl.vel;
+                fps.win_size = ctrl.win_size;
+                fps.state = FPS_IDLE;
+                fps.blend_time = BLEND_DUR;
+                fps.pitch = 0;
+                float sign, abs_angle;
+                rot_diff_y(ctrl.forward, vec3{0,0,1}, sign, abs_angle);
+                fps.yaw = sign * abs_angle;
+            }
+        }
+        else
+        {
+            bool hit;
+            vec3 hit_pos;
+            fps_resolve_events(fps, dt, meshes[0], hit, hit_pos);
+
+            if(hit)
+            {
+                Object obj = objects.back();
+                obj.pos = hit_pos;
+                obj.scale = vec3{0.2,0.2,0.2};
+                objects.push_back(obj);
+            }
+
+            view = fps.view;
+            proj = fps.proj;
+            forward = fps.forward_xz;
+            eye_pos = fps.eye_pos;
+            char_pos = fps.pos;
+            render_thirdp = false;
+
+            if(fps.change_mode_action)
+            {
+                fps.change_mode_action = false;
+                ctrl_mode = true;
+                // update controller
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                ctrl.pos = fps.pos;
+                ctrl.vel = fps.vel;
+                ctrl.win_size = fps.win_size;
+                ctrl.forward = fps.forward_xz;
+            }
+        }
+
+        objects[1].pos = char_pos;
+        objects[2].pos = objects[1].pos + 2 * forward;
         objects[3].pos = ctrl.pos + ctrl.orbit_offset;
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
@@ -1539,12 +2100,12 @@ int main()
             GLint specular_color_loc = glGetUniformLocation(prog, "specular_color");
             GLint specular_exp_loc = glGetUniformLocation(prog, "specular_exp");
 
-            glUniformMatrix4fv(view_loc, 1, GL_TRUE, ctrl.view.data);
-            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, ctrl.proj.data);
+            glUniformMatrix4fv(view_loc, 1, GL_TRUE, view.data);
+            glUniformMatrix4fv(proj_loc, 1, GL_TRUE, proj.data);
             glUniform3fv(light_int_loc, 1, &light_intensity.x);
             glUniform3fv(light_dir_loc, 1, &light_dir.x);
             glUniform1f(ambient_int_loc, 0.01);
-            glUniform3fv(eye_pos_loc, 1, &ctrl.eye_pos.x);
+            glUniform3fv(eye_pos_loc, 1, &eye_pos.x);
             glUniform3fv(specular_color_loc, 1, &specular_color.x);
             glUniform1f(specular_exp_loc, 50);
         }
@@ -1563,7 +2124,14 @@ int main()
             else if(i == 2)
                 diffuse_color = vec3{0,1,0};
             else if(i == 3)
+            {
+                if(!render_thirdp)
+                    continue;
                 diffuse_color = vec3{1,0,1};
+                continue; // disabled for now
+            }
+            else if(i > 3)
+                diffuse_color = vec3{1,0.3,1};
 
             mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
             glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
@@ -1580,14 +2148,28 @@ int main()
 
         // character model
 
-        vec3 diffuse_color = {0,0.5,0};
-        glUseProgram(skel_prog);
-        glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
-        glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
-        assert(actrl.mesh->bone_count <= MAX_BONES);
-        glUniformMatrix4fv(glGetUniformLocation(skel_prog, "skinning_matrices"), actrl.mesh->bone_count, GL_TRUE, actrl.skinning_mats[0].data);
-        glBindVertexArray(actrl.mesh->vao);
-        glDrawElements(GL_TRIANGLES, actrl.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)actrl.mesh->ebo_offset); // suppress warning
+        if(render_thirdp)
+        {
+            vec3 diffuse_color = {0,0.5,0};
+            glUseProgram(skel_prog);
+            glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
+            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, actrl.model_tf.data);
+            assert(actrl.mesh->bone_count <= MAX_BONES);
+            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "skinning_matrices"), actrl.mesh->bone_count, GL_TRUE, actrl.skinning_mats[0].data);
+            glBindVertexArray(actrl.mesh->vao);
+            glDrawElements(GL_TRIANGLES, actrl.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)actrl.mesh->ebo_offset); // suppress warning
+        }
+        else
+        {
+            vec3 diffuse_color = {1,1,1};
+            glUseProgram(skel_prog);
+            glUniform3fv(glGetUniformLocation(skel_prog, "diffuse_color"), 1, &diffuse_color.x);
+            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "model"), 1, GL_TRUE, fps.model_tf.data);
+            assert(fps.mesh->bone_count <= MAX_BONES);
+            glUniformMatrix4fv(glGetUniformLocation(skel_prog, "skinning_matrices"), fps.mesh->bone_count, GL_TRUE, fps.skinning_mats[0].data);
+            glBindVertexArray(fps.mesh->vao);
+            glDrawElements(GL_TRIANGLES, fps.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)fps.mesh->ebo_offset); // suppress warning
+        }
         SDL_GL_SwapWindow(window);
     }
     SDL_Quit();
