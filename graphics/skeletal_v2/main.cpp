@@ -365,7 +365,7 @@ void update_anim_data(Object& obj, float dt)
 
 mat4 gl_from_blender()
 {
-    return rotate_x(-pi/2);
+    return rotate_x4(-pi/2);
 }
 
 struct Ray
@@ -380,13 +380,6 @@ float intersect_plane(Ray ray, vec3 normal, vec3 pos)
     return t;
 }
 
-vec3 transform3(mat4 m, vec3 v)
-{
-    vec4 h = {v.x, v.y, v.z, 1};
-    h = m * h;
-    return {h.x, h.y, h.z};
-}
-
 struct Nav
 {
     vec3 center;
@@ -399,7 +392,7 @@ struct Nav
     bool shift_down;
     vec2 cursor_win;
     vec2 win_size;
-    float top;
+    float right;
     float near;
     float far;
     bool ortho;
@@ -427,8 +420,8 @@ void rebuild_view_matrix(Nav& nav)
 void rebuild_proj_matrix(Nav& nav)
 {
     float aspect = nav.win_size.x / nav.win_size.y;
-    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
-    float right = top * aspect;
+    float right = !nav.ortho ? nav.right : (nav.right / nav.near) * length(nav.center - nav.eye_pos);
+    float top = right / aspect;
 
     if(nav.ortho)
         nav.proj = orthographic(-right, right, -top, top, nav.near, nav.far);
@@ -436,7 +429,7 @@ void rebuild_proj_matrix(Nav& nav)
         nav.proj = frustum(-right, right, -top, top, nav.near, nav.far);
 }
 
-void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fovy, float near, float far)
+void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fov_hori, float near, float far)
 {
     nav.center = {0,0,0};
     nav.eye_pos = eye_pos;
@@ -447,7 +440,7 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
     nav.shift_down = false;
     nav.win_size.x = win_width;
     nav.win_size.y = win_height;
-    nav.top = tanf(deg_to_rad(fovy) / 2.f) * near;
+    nav.right = tanf(fov_hori / 2) * near;
     nav.near = near;
     nav.far = far;
     nav.ortho = false;
@@ -458,8 +451,8 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
 
 Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
 {
-    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
-    float right = top * (nav.win_size.x / nav.win_size.y);
+    float right = !nav.ortho ? nav.right : (nav.right / nav.near) * length(nav.center - nav.eye_pos);
+    float top = right / (nav.win_size.x / nav.win_size.y);
     float x = (2*right/nav.win_size.x) * (cursor_win.x + 0.5) - right;
     float y = (-2*top/nav.win_size.y) * (cursor_win.y + 0.5) + top;
     float z = -nav.near;
@@ -468,14 +461,13 @@ Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
 
     if(nav.ortho)
     {
-        ray.pos = transform3(world_f_view, vec3{x,y,z});
+        ray.pos = to_vec3(world_f_view * vec4{x,y,z,1});
         ray.dir = normalize(nav.center - nav.eye_pos);
     }
     else
     {
-        mat3 eye_basis = mat4_to_mat3(world_f_view);
         ray.pos = nav.eye_pos;
-        ray.dir = normalize( eye_basis * vec3{x,y,z} );
+        ray.dir = normalize(to_vec3( world_f_view * vec4{x,y,z,0} ));
     }
     return ray;
 }
@@ -511,9 +503,9 @@ void nav_process_event(Nav& nav, SDL_Event& e)
             nav.aligned = false;
             float dx = 4*pi * -(new_cursor_win.x - nav.cursor_win.x) / nav.win_size.x;
             float dy = 4*pi * -(new_cursor_win.y - nav.cursor_win.y) / nav.win_size.y;
-            mat4 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
-            nav.eye_pos = transform3(translate(nav.center) * rot * translate(-nav.center), nav.eye_pos);
-            nav.eye_x = transform3(rot, nav.eye_x);
+            mat3 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
+            nav.eye_pos = to_vec3(translate(nav.center) * to_mat4(rot) * translate(-nav.center) * to_point4(nav.eye_pos));
+            nav.eye_x = rot * nav.eye_x;
             rebuild_view_matrix(nav);
         }
         nav.cursor_win = new_cursor_win;
@@ -680,7 +672,7 @@ int main()
     Nav nav;
     int width, height;
     SDL_GetWindowSize(window, &width, &height);
-    nav_init(nav, vec3{0.5,2,4}, width, height, 50, 0.1, 100);
+    nav_init(nav, vec3{0.5,2,3}, width, height, to_radians(90), 0.1, 100);
     bool quit = false;
     bool draw_bones = false;
     bool en_camera_locator = false;

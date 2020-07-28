@@ -416,7 +416,7 @@ RenderCmd test_triangle()
 
 mat4 gl_from_blender()
 {
-    return rotate_x(-pi/2) * rotate_z(-pi/2);
+    return rotate_x4(-pi/2) * rotate_z4(-pi/2);
 }
 
 int main()
@@ -465,7 +465,7 @@ int main()
     bool quit = false;
     bool enable_move = false;
     bool draw_debug_bones = false;
-    vec3 camera_pos = {0.f, 1.f, 2.f};
+    vec3 camera_pos = {0.f, 0.8f, 1.5f};
     float pitch = 0;
     float yaw = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter();
@@ -480,7 +480,7 @@ int main()
     cmd[0].specular_color = {1, 0, 0};
     cmd[0].specular_exp = 60;
     cmd[0].debug = false;
-    cmd[0].model_transform = rotate_y(pi/4) * gl_from_blender();
+    cmd[0].model_transform = rotate_y4(pi/4) * gl_from_blender();
 
     cmd[1] = cmd[0];
 	cmd[2] = cmd[0];
@@ -490,6 +490,9 @@ int main()
 
     RenderCmd cmd_deb = test_triangle();
     cmd_deb.model_transform = scale({0.05,0.05,0.05});
+
+    int width, height;
+    SDL_GetWindowSize(window, &width, &height);
 
     while(!quit)
     {
@@ -523,14 +526,11 @@ int main()
             }
             else if(event.type == SDL_MOUSEMOTION && enable_move)
             {
-                yaw -= event.motion.xrel / 10.f;
-                float new_pitch = pitch - event.motion.yrel / 10.f;
-
-                if(fabs(new_pitch) < 80.f)
-                    pitch = new_pitch;
+                yaw -= 2*pi * ((float)event.motion.xrel / width);
+                pitch -= 2*pi * ((float)event.motion.yrel / height);
+                pitch = max(to_radians(-80), min(to_radians(80), pitch));
             }
         }
-        int width, height;
         SDL_GetWindowSize(window, &width, &height);
 
         Uint64 current_counter = SDL_GetPerformanceCounter();
@@ -542,7 +542,7 @@ int main()
         update_skinning_matrices(cmd_active, dt);
 
         cmd_active.view = lookat(camera_pos, yaw, pitch);
-        cmd_active.proj = perspective(60, (float)width/height, 0.1f, 100.f);
+        cmd_active.proj = perspective(to_radians(90), (float)width/height, 0.1f, 100.f);
         cmd_active.eye_pos = camera_pos;
 
         cmd_deb.view = cmd_active.view;

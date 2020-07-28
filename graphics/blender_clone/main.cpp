@@ -126,7 +126,7 @@ struct Object
 {
     Mesh* mesh;
     vec3 pos;
-    mat4 rot;
+    mat3 rot;
     vec3 scale;
 };
 
@@ -359,13 +359,6 @@ GLuint create_program(const char* vert, const char* frag)
     return program;
 }
 
-vec3 transform3(mat4 m, vec3 v)
-{
-    vec4 h = {v.x, v.y, v.z, 1};
-    h = m * h;
-    return {h.x, h.y, h.z};
-}
-
 struct Ray
 {
     vec3 pos;
@@ -392,7 +385,7 @@ struct Nav
     bool shift_down;
     vec2 cursor_win;
     vec2 win_size;
-    float top;
+    float right;
     float near;
     float far;
     bool ortho;
@@ -420,8 +413,8 @@ void rebuild_view_matrix(Nav& nav)
 void rebuild_proj_matrix(Nav& nav)
 {
     float aspect = nav.win_size.x / nav.win_size.y;
-    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
-    float right = top * aspect;
+    float right = !nav.ortho ? nav.right : (nav.right / nav.near) * length(nav.center - nav.eye_pos);
+    float top = right / aspect;
 
     if(nav.ortho)
         nav.proj = orthographic(-right, right, -top, top, nav.near, nav.far);
@@ -429,7 +422,7 @@ void rebuild_proj_matrix(Nav& nav)
         nav.proj = frustum(-right, right, -top, top, nav.near, nav.far);
 }
 
-void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fovy, float near, float far)
+void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float fov_hori, float near, float far)
 {
     nav.center = {0,0,0};
     nav.eye_pos = eye_pos;
@@ -440,7 +433,7 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
     nav.shift_down = false;
     nav.win_size.x = win_width;
     nav.win_size.y = win_height;
-    nav.top = tanf(deg_to_rad(fovy) / 2.f) * near;
+    nav.right = tanf(fov_hori / 2) * near;
     nav.near = near;
     nav.far = far;
     nav.ortho = false;
@@ -451,8 +444,8 @@ void nav_init(Nav& nav, vec3 eye_pos, float win_width, float win_height, float f
 
 Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
 {
-    float top = !nav.ortho ? nav.top : (nav.top / nav.near) * length(nav.center - nav.eye_pos);
-    float right = top * (nav.win_size.x / nav.win_size.y);
+    float right = !nav.ortho ? nav.right : (nav.right / nav.near) * length(nav.center - nav.eye_pos);
+    float top = right / (nav.win_size.x / nav.win_size.y);
     float x = (2*right/nav.win_size.x) * (cursor_win.x + 0.5) - right;
     float y = (-2*top/nav.win_size.y) * (cursor_win.y + 0.5) + top;
     float z = -nav.near;
@@ -461,14 +454,13 @@ Ray nav_get_cursor_ray(Nav& nav, vec2 cursor_win)
 
     if(nav.ortho)
     {
-        ray.pos = transform3(world_f_view, vec3{x,y,z});
+        ray.pos = to_vec3(world_f_view * vec4{x,y,z,1});
         ray.dir = normalize(nav.center - nav.eye_pos);
     }
     else
     {
-        mat3 eye_basis = mat4_to_mat3(world_f_view);
         ray.pos = nav.eye_pos;
-        ray.dir = normalize( eye_basis * vec3{x,y,z} );
+        ray.dir = normalize(to_vec3( world_f_view * vec4{x,y,z,0} ));
     }
     return ray;
 }
@@ -504,9 +496,9 @@ void nav_process_event(Nav& nav, SDL_Event& e)
             nav.aligned = false;
             float dx = 4*pi * -(new_cursor_win.x - nav.cursor_win.x) / nav.win_size.x;
             float dy = 4*pi * -(new_cursor_win.y - nav.cursor_win.y) / nav.win_size.y;
-            mat4 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
-            nav.eye_pos = transform3(translate(nav.center) * rot * translate(-nav.center), nav.eye_pos);
-            nav.eye_x = transform3(rot, nav.eye_x);
+            mat3 rot = rotate_y(dx) * rotate_axis(nav.eye_x, dy);
+            nav.eye_pos = to_vec3(translate(nav.center) * to_mat4(rot) * translate(-nav.center) * to_point4(nav.eye_pos));
+            nav.eye_x = rot * nav.eye_x;
             rebuild_view_matrix(nav);
         }
         nav.cursor_win = new_cursor_win;
@@ -673,9 +665,9 @@ float intersect_triangle(Ray ray, Vertex* verts)
 float intersect_object(Ray ray, Object& obj, int& vert_id)
 {
     vec3 inv_scale = {1/obj.scale.x, 1/obj.scale.y, 1/obj.scale.z};
-    mat4 obj_f_world = scale(inv_scale) * transpose(obj.rot) * translate(-obj.pos);
-    ray.pos = transform3(obj_f_world, ray.pos);
-    ray.dir = mat4_to_mat3(obj_f_world) * ray.dir;
+    mat4 obj_f_world = scale(inv_scale) * to_mat4(transpose(obj.rot)) * translate(-obj.pos);
+    ray.pos = to_vec3(obj_f_world * to_point4(ray.pos));
+    ray.dir = to_vec3(obj_f_world * to_dir4(ray.dir));
     int is_dir_neg[3] = {ray.dir.x < 0, ray.dir.y < 0, ray.dir.z < 0};
     vert_id = -1;
     float t_min = -1;
@@ -744,7 +736,7 @@ struct Control
     vec2 cursor_win;
     vec2 cursor_win_init;
     vec3 scale_init;
-    mat4 rot_init;
+    mat3 rot_init;
     vec3 pos_init;
 };
 
@@ -770,7 +762,7 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
     {
         if(!(ctrl.axes & (1<<i)))
             continue;
-        axes[axis_count] = ctrl.axes_local ? transform3(ctrl.rot_init, basis[i]) : basis[i];
+        axes[axis_count] = ctrl.axes_local ? ctrl.rot_init * basis[i] : basis[i];
         axis_count += 1;
     }
 
@@ -817,11 +809,11 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
         float a1 = atan2f(v1.y, v1.x);
         float a2 = atan2f(v2.y, v2.x);
         float da = a2 - a1;
-        mat4 add_rot = rotate_axis(rot_axis, da);
+        mat3 add_rot = rotate_axis(rot_axis, da);
         obj.rot = add_rot * obj.rot;
 
         if(!ctrl.pivot_local)
-            obj.pos = transform3(add_rot, obj.pos);
+            obj.pos = add_rot * obj.pos;
         break;
     }
     case CTRL_SCALE:
@@ -840,8 +832,9 @@ void apply_transform(Control& ctrl, Nav& nav, Object& obj, vec2 cursor2_win)
             obj.scale = mul_cwise(add_scale, ctrl.scale_init);
         else
         {
-            mat4 world_f_model = translate(ctrl.pos_init) * ctrl.rot_init * scale(ctrl.scale_init);
-            mat4 tf = ctrl.rot_init * scale(add_scale) * transpose(ctrl.rot_init) * world_f_model;
+            mat4 rot_init4 = to_mat4(ctrl.rot_init);
+            mat4 world_f_model = translate(ctrl.pos_init) * rot_init4 * scale(ctrl.scale_init);
+            mat4 tf = rot_init4 * scale(add_scale) * transpose(rot_init4) * world_f_model;
             decompose(tf, obj.pos, obj.rot, obj.scale);
         }
         break;
@@ -1060,7 +1053,7 @@ int main()
     {
         int width, height;
         SDL_GetWindowSize(window, &width, &height);
-        nav_init(nav, vec3{2,2,8}, width, height, 60, 0.1, 1000);
+        nav_init(nav, vec3{2,2,8}, width, height, to_radians(90), 0.1, 1000);
     }
 
     bool quit = false;
@@ -1087,7 +1080,7 @@ int main()
             {
                 Mesh* spawn_mesh = nullptr;
                 vec3 spawn_pos = {};
-                mat4 spawn_rot = identity4();
+                mat3 spawn_rot = identity3();
                 vec3 spawn_scale = {1,1,1};
 
                 switch(event.key.keysym.sym)
@@ -1210,7 +1203,7 @@ int main()
                 else
                     diffuse_color = vec3{0.6, 0.1, 0};
             }
-            mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
+            mat4 model = translate(obj.pos) * to_mat4(obj.rot) * scale(obj.scale);
             glUniform3fv(diffuse_color_loc, 1, &diffuse_color.x);
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
             glBindVertexArray(obj.mesh->vao);
@@ -1245,7 +1238,7 @@ int main()
             for(vec3& coord: coords)
                 coord = coord + 0.001 * normal;
 
-            mat4 model = translate(obj.pos) * obj.rot * scale(obj.scale);
+            mat4 model = translate(obj.pos) * to_mat4(obj.rot) * scale(obj.scale);
             GLint model_loc = glGetUniformLocation(prog_solid, "model");
             glUniformMatrix4fv(model_loc, 1, GL_TRUE, model.data);
             vec3 color = {0,1,0};
@@ -1284,7 +1277,7 @@ int main()
                 vec3 axis = basis[i];
 
                 if(control.axes_local)
-                    axis = mat4_to_mat3(control.rot_init) * axis;
+                    axis = control.rot_init * axis;
 
                 vec3 p1 = pivot + d * axis;
                 vec3 p2 = pivot - d * axis;

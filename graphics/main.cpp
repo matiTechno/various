@@ -443,7 +443,7 @@ void ras_draw(RenderCmd& cmd)
 {
     // something like a fixed vertex shader
     mat4 proj_view = cmd.proj * cmd.view;
-    mat3 model3 = mat4_to_mat3(cmd.model_transform);
+    mat3 model3 = to_mat3(cmd.model_transform);
 
     for(int base = 0; base < cmd.vertex_count; base += 3)
     {
@@ -452,9 +452,7 @@ void ras_draw(RenderCmd& cmd)
 
         for(int i = 0; i < 3; ++i)
         {
-            vec3 vert_pos = cmd.positions[base + i];
-            coords[i] = {vert_pos.x, vert_pos.y, vert_pos.z, 1};
-            coords[i] = cmd.model_transform * coords[i];
+            coords[i] = cmd.model_transform * to_point4(cmd.positions[base + i]);
             varyings[i].pos = {coords[i].x, coords[i].y, coords[i].z};
             coords[i] = proj_view * coords[i];
             varyings[i].normal = model3 * cmd.normals[base + i];
@@ -732,7 +730,7 @@ void raytracer_thread_work(RenderCmd& cmd, BV_node* bvh_root)
     if(!cmd.proj.data[14])
         return;
 
-    mat3 model3 = mat4_to_mat3(cmd.model_transform); // this is used to transform normals
+    mat3 model3 = to_mat3(cmd.model_transform); // this is used to transform normals
     float left, right, bot, top, near, far;
     extract_frustum(cmd.proj, left, right, bot, top, near, far);
     int width = _ras.width;
@@ -740,7 +738,7 @@ void raytracer_thread_work(RenderCmd& cmd, BV_node* bvh_root)
 
     mat4 model_from_view = invert_coord_change(cmd.model_transform) * invert_coord_change(cmd.view); // model_from_world * world_from_view
     // with respect to a model space; intersection test is performed in a model space
-    mat3 eye_basis = mat4_to_mat3(model_from_view);
+    mat3 eye_basis = to_mat3(model_from_view);
     vec3 eye_pos = {model_from_view.data[3], model_from_view.data[7], model_from_view.data[11]};
     vec3 eye_dir = {-eye_basis.data[2], -eye_basis.data[5], -eye_basis.data[8]};
 
@@ -1161,7 +1159,7 @@ int main()
     int render_mode = 0;
     bool use_persp = true;
     bool allow_rot = false;
-    vec3 camera_pos = {0.f, 0.f, 2.f};
+    vec3 camera_pos = {0.f, 0.f, 2.2f};
     float pitch = 0;
     float yaw = 0;
     Uint64 prev_counter = SDL_GetPerformanceCounter(); // on linux this is clock_gettime(CLOCK_MONOTONIC)
@@ -1195,6 +1193,8 @@ int main()
         printf("BVH leaf     nodes: %d\n", leaf);
     }
     std::vector<vec3> segments;
+    int width, height;
+    SDL_GetWindowSize(window, &width, &height);
 
     while(!quit)
     {
@@ -1245,16 +1245,13 @@ int main()
             }
             else if(event.type == SDL_MOUSEMOTION && enable_move)
             {
-                yaw -= event.motion.xrel / 10.f;
-                float new_pitch = pitch - event.motion.yrel / 10.f;
-
-                if(fabs(new_pitch) < 80.f)
-                    pitch = new_pitch;
+                yaw -= 2*pi * ((float)event.motion.xrel / width);
+                pitch -= 2*pi * ((float)event.motion.yrel / height);
+                pitch = max(to_radians(-80), min(to_radians(80), pitch));
             }
         }
-        int width, height;
         SDL_GetWindowSize(window, &width, &height);
-        mat4 persp = perspective(60, (float)width/height, 0.1f, 100.f);
+        mat4 persp = perspective(to_radians(90), (float)width/height, 0.1f, 100.f);
         mat4 ortho;
         {
             float l, r, b, t, n, f;

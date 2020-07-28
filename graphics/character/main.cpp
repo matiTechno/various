@@ -502,13 +502,6 @@ GLuint create_program(const char* vert, const char* frag)
     return program;
 }
 
-vec3 transform3(mat4 m, vec3 v)
-{
-    vec4 h = {v.x, v.y, v.z, 1};
-    h = m * h;
-    return {h.x, h.y, h.z};
-}
-
 struct Ray
 {
     vec3 pos;
@@ -905,7 +898,7 @@ void ctrl_init(Controller& ctrl, float win_width, float win_height, vec3 orbit_o
     ctrl.target_dist = 35;
     ctrl.current_dist = ctrl.target_dist;
     ctrl.dist_vel = {};
-    ctrl.pitch = deg_to_rad(35);
+    ctrl.pitch = to_radians(35);
     ctrl.yaw = 0;
     ctrl.win_size = {win_width, win_height};
     ctrl.lmb_down = false;
@@ -983,8 +976,8 @@ void ctrl_process_event(Controller& ctrl, SDL_Event& e, SDL_Window* window)
         float dx = 2*pi * (float)e.motion.xrel / ctrl.win_size.x;
         float dy = 2*pi * (float)e.motion.yrel / ctrl.win_size.y;
         ctrl.pitch += dy;
-        ctrl.pitch = min(ctrl.pitch, deg_to_rad(80));
-        ctrl.pitch = max(ctrl.pitch, deg_to_rad(-80));
+        ctrl.pitch = min(ctrl.pitch, to_radians(80));
+        ctrl.pitch = max(ctrl.pitch, to_radians(-80));
         ctrl.yaw -= dx;
         break;
     }
@@ -1040,15 +1033,15 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
         if(ctrl.d_down)
             turn_dir += -1;
 
-        turn_angle = turn_dir * 2 * pi / 2.5 * dt;
-        ctrl.forward = transform3(rotate_y(turn_angle), ctrl.forward);
+        turn_angle = turn_dir * (2 * pi / 2.5) * dt;
+        ctrl.forward = rotate_y(turn_angle) * ctrl.forward;
 
         if(ctrl.lmb_down)
             ctrl.yaw -= turn_angle;
     }
     else
     {
-        ctrl.forward = transform3(rotate_y(ctrl.yaw), ctrl.forward);
+        ctrl.forward = rotate_y(ctrl.yaw) * ctrl.forward;
         ctrl.yaw = 0;
     }
 
@@ -1076,7 +1069,7 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
         vel = 0.5 * vel;
 
     // slide down on steep slopes, steeper than the given angle
-    float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
+    float max_offset_y = PLANE_OFFSET / cosf(to_radians(60));
     STI sti = intersect_level(ctrl.radius, ctrl.pos, ctrl.pos + vec3{0,-max_offset_y,0}, level);
     ground = sti.valid;
 
@@ -1124,7 +1117,7 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
         ctrl.yaw += angle;
     }
 
-    vec3 eye_dir_xz = transform3(rotate_y(ctrl.yaw), -ctrl.forward);
+    vec3 eye_dir_xz = rotate_y(ctrl.yaw) * -ctrl.forward;
     vec3 eye_right = cross(vec3{0,1,0}, eye_dir_xz);
     vec3 eye_dir;
     float hit_dist = FLT_MAX;
@@ -1140,7 +1133,9 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
         float t_cirp = intersect_level(cirp, level);
         bool eye_hit = t_cirp + CIRP_EPS >= ctrl.pitch;
         vec3 eye_pos = eye_hit ? cirp.get(t_cirp + CIRP_EPS) : cirp.get(ctrl.pitch);
-        hit_dist = length(eye_pos - orbit_center);
+
+        if(eye_hit)
+            hit_dist = length(eye_pos - orbit_center);
         eye_dir = normalize(eye_pos - orbit_center);
         float t_ray = intersect_level(Ray{orbit_center, eye_dir}, level);
 
@@ -1149,7 +1144,7 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
     }
     else
     {
-        eye_dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
+        eye_dir = rotate_axis(eye_right, -ctrl.pitch) * eye_dir_xz;
         float t = intersect_level(Ray{orbit_center, eye_dir}, level);
 
         if(t > 0)
@@ -1171,9 +1166,9 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
         ctrl.current_dist = max(lim_dist, new_dist);
 
     ctrl.eye_pos = orbit_center + ctrl.current_dist * eye_dir;
-    vec3 view_dir = transform3(rotate_axis(eye_right, -ctrl.pitch), eye_dir_xz);
+    vec3 view_dir = rotate_axis(eye_right, -ctrl.pitch) * eye_dir_xz;
     ctrl.view = lookat(ctrl.eye_pos, -view_dir);
-    ctrl.proj = perspective(60, ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
+    ctrl.proj = perspective(to_radians(90), ctrl.win_size.x / ctrl.win_size.y, 0.1, 1000);
     ctrl.jump_action = false;
 
     if(ctrl.change_mode_action)
@@ -1192,7 +1187,7 @@ void ctrl_resolve_events(Controller& ctrl, float dt, Mesh& level, bool& ground)
 
 mat4 gl_from_blender()
 {
-    return rotate_x(-pi/2);
+    return rotate_x4(-pi/2);
 }
 
 void rot_diff_y(vec3 lhs, vec3 rhs, float& sign, float& abs_angle)
@@ -1247,12 +1242,12 @@ void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
             if(in.rmb_down)
             {
                 if(abs_angle > pi/2)
-                    actrl.model_dir = transform3(rotate_y(-sign * pi/2), in.forward);
+                    actrl.model_dir = rotate_y(-sign * pi/2) * in.forward;
             }
             else
             {
                 float angle = sign * min(max_angle_disp, abs_angle);
-                actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+                actrl.model_dir = rotate_y(angle) * actrl.model_dir;
             }
         }
         else
@@ -1271,7 +1266,7 @@ void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
                 float angle = sign * abs_angle;
                 actrl.jump_angle = -angle;
                 // this is needed for the next part to work when angles are close to pi/2
-                target_dir = transform3(rotate_y(angle/100), target_dir);
+                target_dir = rotate_y(angle/100) * target_dir;
             }
             float sign, sign2, abs_angle, abs_angle2;
             rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
@@ -1283,7 +1278,7 @@ void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
                 abs_angle = 2*pi - abs_angle;
             }
             float angle = sign * min(abs_angle, max_angle_disp);
-            actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+            actrl.model_dir = rotate_y(angle) * actrl.model_dir;
         }
     }
     else
@@ -1303,12 +1298,12 @@ void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
             actrl.jump_angle = sign * abs_angle;
         }
         else
-            target_dir = transform3(rotate_y(actrl.jump_angle), in.forward);
+            target_dir = rotate_y(actrl.jump_angle) * in.forward;
 
         float sign, abs_angle;
         rot_diff_y(target_dir, actrl.model_dir, sign, abs_angle);
         float angle = sign * min(abs_angle, max_angle_disp);
-        actrl.model_dir = transform3(rotate_y(angle), actrl.model_dir);
+        actrl.model_dir = rotate_y(angle) * actrl.model_dir;
     }
 
     actrl.vel_xz = vel_xz;
@@ -1340,8 +1335,8 @@ void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
         float sign, abs_angle;
         rot_diff_y(in.forward, actrl.model_dir, sign, abs_angle);
         float angle = sign * abs_angle;
-        actrl.add_bone_rots[spine1_id] = rotate_y(angle * 0.5);
-        actrl.add_bone_rots[neck_id] = rotate_y(angle * 0.25);
+        actrl.add_bone_rots[spine1_id] = rotate_y4(angle * 0.5);
+        actrl.add_bone_rots[neck_id] = rotate_y4(angle * 0.25);
     }
 
     // update action state
@@ -1414,7 +1409,7 @@ void update_anim_controller(AnimCtrl& actrl, AnimCtrlInput in)
 
     float sign, abs_angle;
     rot_diff_y(actrl.model_dir, vec3{0,0,1}, sign, abs_angle);
-    actrl.model_tf = translate(in.pos) * rotate_y(sign * abs_angle) * actrl.adjust_tf;
+    actrl.model_tf = translate(in.pos) * rotate_y4(sign * abs_angle) * actrl.adjust_tf;
 
     UpdateBoneInput ubin;
     ubin.mesh = actrl.mesh;
@@ -1543,8 +1538,8 @@ void fps_process_event(FpsCtrl& fps, SDL_Event& e)
         float dy = 1.5*pi * (float)e.motion.yrel / fps.win_size.y;
         fps.yaw -= dx;
         fps.pitch -= dy;
-        fps.pitch = min(fps.pitch, deg_to_rad(85));
-        fps.pitch = max(fps.pitch, deg_to_rad(-85));
+        fps.pitch = min(fps.pitch, to_radians(85));
+        fps.pitch = max(fps.pitch, to_radians(-85));
         break;
     }
     case SDL_KEYDOWN:
@@ -1584,7 +1579,7 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
 {
     // collider update
 
-    vec3 move_fwd = transform3(rotate_y(fps.yaw), vec3{0,0,1});
+    vec3 move_fwd = rotate_y(fps.yaw) * vec3{0,0,1};
     vec3 move_dir = {};
     assert(move_fwd.y == 0);
     vec3 move_right = cross(move_fwd, vec3{0,1,0});
@@ -1606,7 +1601,7 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
     if(dot(move_dir, move_fwd) + 0.01 < 0)
         vel = 0.5 * vel;
 
-    float max_offset_y = PLANE_OFFSET / cosf(deg_to_rad(60));
+    float max_offset_y = PLANE_OFFSET / cosf(to_radians(60));
     STI sti = intersect_level(fps.radius, fps.pos, fps.pos + vec3{0,-max_offset_y,0}, level);
 
     if(!sti.valid)
@@ -1723,8 +1718,8 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
         {
             fps.action_time = 0;
             shot = true;
-            fps.yaw += deg_to_rad(-0.2);
-            fps.pitch += deg_to_rad(0.5);
+            fps.yaw += to_radians(-0.2);
+            fps.pitch += to_radians(0.5);
         }
         else if(fps.aim_action)
         {
@@ -1801,10 +1796,8 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
     }
 
     assert(locator_id);
-    vec3 rot_origin = transform3(fps.adjust_tf * fps.cp_model_f_bone[locator_id], vec3{0,0,0});
-    fps.forward_xz = transform3(rotate_y(fps.yaw), vec3{0,0,1});
-    vec3 right = cross(fps.forward_xz, vec3{0,1,0});
-    fps.model_tf = translate(fps.pos + rot_origin) * rotate_axis(right, fps.pitch) * rotate_y(fps.yaw) * translate(-rot_origin) * fps.adjust_tf;
+    vec3 rotx_origin = to_vec3(fps.adjust_tf * fps.cp_model_f_bone[locator_id] * vec4{0,0,0,1});
+    fps.model_tf = translate(fps.pos) * rotate_y4(fps.yaw) * translate(rotx_origin) * rotate_x4(-fps.pitch) * translate(-rotx_origin) * fps.adjust_tf;
     mat4 world_f_view = fps.model_tf * fps.cp_model_f_bone[locator_id];
     fps.eye_pos = vec3{world_f_view.data[3], world_f_view.data[7], world_f_view.data[11]};
 
@@ -1812,11 +1805,12 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
     // todo:
     {
         vec3 pos, scale;
-        mat4 rot;
+        mat3 rot;
         decompose(world_f_view, pos, rot, scale);
-        fps.view = invert_coord_change(translate(pos) * rot);
+        fps.view = invert_coord_change(translate(pos) * to_mat4(rot));
     }
-    fps.proj = perspective(50, fps.win_size.x / fps.win_size.y, 0.1, 1000);
+    fps.proj = perspective(to_radians(80), fps.win_size.x / fps.win_size.y, 0.1, 1000);
+    fps.forward_xz = rotate_y(fps.yaw) * vec3{0,0,1};
     fps.jump_action = false;
     fps.reload_action = false;
     fps.shoot_action = false;

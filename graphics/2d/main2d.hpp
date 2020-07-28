@@ -35,13 +35,6 @@ mat3 orthographic(float l, float r, float b, float t)
     return m;
 }
 
-inline
-vec2 transform2(mat3 m, vec2 v)
-{
-    vec3 tmp = m * vec3{v.x, v.y, 1};
-    return {tmp.x, tmp.y};
-}
-
 // to get a cursor coordinates in a world space use inverse( window_from_clip * cip_from_world )
 inline
 mat3 window_from_clip(float width, float height)
@@ -111,7 +104,7 @@ void nav_process_event(Nav2d& nav, SDL_Event& e)
     {
         mat3 world_f_window = inverse( window_from_clip(nav.win_width, nav.win_height) * nav.clip_f_world );
         vec2 new_cursor_win = {(float)e.motion.x, (float)e.motion.y};
-        vec2 new_cursor_world = transform2(world_f_window, new_cursor_win);
+        vec2 new_cursor_world = to_vec2(world_f_window * to_point3(new_cursor_win));
 
         if(nav.rmb_down)
         {
@@ -126,13 +119,13 @@ void nav_process_event(Nav2d& nav, SDL_Event& e)
             vec2 v2 = new_cursor_world - nav.eye_pos;
             float a1 = atan2f(v1.y, v1.x);
             float a2 = atan2f(v2.y, v2.x);
-            mat3 rot = mat4_to_mat3( rotate_z(a1 - a2) );
-            nav.eye_x = transform2(rot, nav.eye_x);
-            nav.eye_y = transform2(rot, nav.eye_y);
+            mat3 rot = rotate_z(a1 - a2);
+            nav.eye_x = to_vec2(rot * to_dir3(nav.eye_x));
+            nav.eye_y = to_vec2(rot * to_dir3(nav.eye_y));
             rebuild_matrix(nav);
             // recalculate cursor world cooridnates
             world_f_window = inverse( window_from_clip(nav.win_width, nav.win_height) * nav.clip_f_world);
-            nav.cursor_world = transform2(world_f_window, new_cursor_win);
+            nav.cursor_world = to_vec2(world_f_window * to_point3(new_cursor_win));
         }
         else
             nav.cursor_world = new_cursor_world;
@@ -147,7 +140,7 @@ void nav_process_event(Nav2d& nav, SDL_Event& e)
         nav.top /= scale;
         rebuild_matrix(nav);
         mat3 world_f_window = inverse( window_from_clip(nav.win_width, nav.win_height) * nav.clip_f_world );
-        vec2 new_cursor_world = transform2(world_f_window, nav.cursor_win);
+        vec2 new_cursor_world = to_vec2(world_f_window * to_point3(nav.cursor_win));
         nav.eye_pos = nav.eye_pos - (new_cursor_world - nav.cursor_world);
         rebuild_matrix(nav);
     }

@@ -3,6 +3,8 @@
 #define pi (3.14159265359f)
 typedef unsigned char u8;
 
+// note: angles are in radians
+
 inline
 float max(float lhs, float rhs)
 {
@@ -130,7 +132,7 @@ vec4 operator*(float scalar, vec4 rhs)
 }
 
 // matrix functions assume row based matrix storage (row1, row2, row3, ...)
-// vec3 and vec4 are treated as column vectors in matrix vector multiplication
+// vec3 and vec4 are treated as column vectors in a matrix vector multiplication
 
 struct mat3
 {
@@ -316,7 +318,7 @@ mat4 transpose(mat4 lhs)
 }
 
 inline
-mat3 mat4_to_mat3(mat4 m4)
+mat3 to_mat3(mat4 m4)
 {
     mat3 m3;
 
@@ -330,9 +332,60 @@ mat3 mat4_to_mat3(mat4 m4)
 }
 
 inline
-float deg_to_rad(float d)
+mat4 to_mat4(mat3 m3)
 {
-    return 2.f * pi * d / 360.f;
+    mat4 m4 = {};
+    m4.data[15] = 1;
+
+    for(int i = 0; i < 3; ++i)
+    {
+        m4.data[i*4 + 0] = m3.data[i*3 + 0];
+        m4.data[i*4 + 1] = m3.data[i*3 + 1];
+        m4.data[i*4 + 2] = m3.data[i*3 + 2];
+    }
+    return m4;
+}
+
+inline
+vec4 to_point4(vec3 v)
+{
+    return {v.x, v.y, v.z, 1};
+}
+
+inline
+vec4 to_dir4(vec3 v)
+{
+    return {v.x, v.y, v.z, 0};
+}
+
+inline
+vec3 to_point3(vec2 v)
+{
+    return {v.x, v.y, 1};
+}
+
+inline
+vec3 to_dir3(vec2 v)
+{
+    return {v.x, v.y, 0};
+}
+
+inline
+vec3 to_vec3(vec4 v)
+{
+    return {v.x, v.y, v.z};
+}
+
+inline
+vec2 to_vec2(vec3 v)
+{
+    return {v.x, v.y};
+}
+
+inline
+float to_radians(float angle)
+{
+    return 2.f * pi * angle / 360.f;
 }
 
 inline
@@ -381,69 +434,88 @@ mat4 scale(vec3 v)
     return m;
 }
 
-// angle is in radians
 inline
-mat4 rotate_x(float angle)
+mat3 rotate_x(float angle)
 {
     float s = sinf(angle);
     float c = cosf(angle);
-    mat4 m = {};
+    mat3 m = {};
     m.data[0] = 1;
-    m.data[5] = c;
-    m.data[6] = -s;
-    m.data[9] = s;
-    m.data[10] = c;
-    m.data[15] = 1;
+    m.data[4] = c;
+    m.data[5] = -s;
+    m.data[7] = s;
+    m.data[8] = c;
     return m;
 }
 
 inline
-mat4 rotate_y(float angle)
+mat3 rotate_y(float angle)
 {
     float s = sinf(angle);
     float c = cosf(angle);
-    mat4 m = {};
+    mat3 m = {};
     m.data[0] = c;
     m.data[2] = s;
-    m.data[5] = 1;
-    m.data[8] = -s;
-    m.data[10] = c;
-    m.data[15] = 1;
+    m.data[4] = 1;
+    m.data[6] = -s;
+    m.data[8] = c;
     return m;
 }
 
 inline
-mat4 rotate_z(float angle)
+mat3 rotate_z(float angle)
 {
     float s = sinf(angle);
     float c = cosf(angle);
-    mat4 m = {};
+    mat3 m = {};
     m.data[0] = c;
     m.data[1] = -s;
-    m.data[4] = s;
-    m.data[5] = c;
-    m.data[10] = 1;
-    m.data[15] = 1;
+    m.data[3] = s;
+    m.data[4] = c;
+    m.data[8] = 1;
     return m;
 }
 
 inline
-mat4 rotate_axis(vec3 a, float angle)
+mat3 rotate_axis(vec3 a, float angle)
 {
     float s = sinf(angle);
     float c = cosf(angle);
-    mat4 m = {};
+    mat3 m;
     m.data[0] = c + ((1-c) * a.x * a.x);
     m.data[1] = ((1-c) * a.x * a.y) - (s * a.z);
     m.data[2] = ((1-c) * a.x * a.z) + (s * a.y);
-    m.data[4] = ((1-c) * a.x * a.y) + (s * a.z);
-    m.data[5] = c + ((1-c) * a.y * a.y);
-    m.data[6] = ((1-c) * a.y * a.z) - (s * a.x);
-    m.data[8] = ((1-c) * a.x * a.z) - (s * a.y);
-    m.data[9] = ((1-c) * a.y * a.z) + (s * a.x);
-    m.data[10] = c + ((1-c) * a.z * a.z);
-    m.data[15] = 1;
+    m.data[3] = ((1-c) * a.x * a.y) + (s * a.z);
+    m.data[4] = c + ((1-c) * a.y * a.y);
+    m.data[5] = ((1-c) * a.y * a.z) - (s * a.x);
+    m.data[6] = ((1-c) * a.x * a.z) - (s * a.y);
+    m.data[7] = ((1-c) * a.y * a.z) + (s * a.x);
+    m.data[8] = c + ((1-c) * a.z * a.z);
     return m;
+}
+
+inline
+mat4 rotate_x4(float angle)
+{
+    return to_mat4(rotate_x(angle));
+}
+
+inline
+mat4 rotate_y4(float angle)
+{
+    return to_mat4(rotate_y(angle));
+}
+
+inline
+mat4 rotate_z4(float angle)
+{
+    return to_mat4(rotate_z(angle));
+}
+
+inline
+mat4 rotate_axis4(vec3 a, float angle)
+{
+    return to_mat4(rotate_axis(a, angle));
 }
 
 // notes on changing coordinate systems
@@ -466,7 +538,7 @@ mat4 rotate_axis(vec3 a, float angle)
 inline
 mat4 invert_coord_change(mat4 m)
 {
-    mat3 rot_trans = transpose(mat4_to_mat3(m));
+    mat3 rot_trans = transpose(to_mat3(m));
     vec3 tr = {m.data[3], m.data[7], m.data[11]};
     vec3 tr2 = -1 * (rot_trans * tr);
     mat4 m2 = {};
@@ -508,13 +580,11 @@ mat4 lookat(vec3 pos, vec3 dir)
     return m * translate(-pos); // first translate then rotate
 }
 
-// angles are in degrees
+// with yaw = 0 and pitch = 0 camera points in the negative z direction (in a world space)
 inline
 mat4 lookat(vec3 pos, float yaw, float pitch)
 {
-    yaw = deg_to_rad(yaw);
-    pitch = deg_to_rad(pitch);
-    return rotate_y(-yaw) * rotate_x(-pitch) * translate(-pos);
+    return rotate_y4(-yaw) * rotate_x4(-pitch) * translate(-pos);
 }
 
 inline
@@ -531,12 +601,11 @@ mat4 frustum(float l, float r, float b, float t, float n, float f)
     return m;
 }
 
-// fovy is in degrees
 inline
-mat4 perspective(float fovy, float aspect, float near, float far)
+mat4 perspective(float fov_hori, float aspect, float near, float far)
 {
-    float top = tanf(deg_to_rad(fovy) / 2.f) * near;
-    float right = top * aspect;
+    float right = near * tanf(fov_hori / 2);
+    float top = right / aspect;
     return frustum(-right, right, -top, top, near, far);
 }
 
@@ -617,7 +686,7 @@ mat4 quat_to_mat4(vec4 q)
 
 // mat = translate * rotate * scale
 inline
-void decompose(mat4 mat, vec3& pos, mat4& rot, vec3& scale)
+void decompose(mat4 mat, vec3& pos, mat3& rot, vec3& scale)
 {
     pos.x = mat.data[3];
     pos.y = mat.data[7];
@@ -632,27 +701,25 @@ void decompose(mat4 mat, vec3& pos, mat4& rot, vec3& scale)
 
         scale[col] = sqrtf(v);
     }
-    rot = {};
-    rot.data[15] = 1;
 
     for(int col = 0; col < 3; ++col)
     {
         for(int row = 0; row < 3; ++row)
-            rot.data[4*row + col] = mat.data[4*row + col] / scale[col];
+            rot.data[3*row + col] = mat.data[4*row + col] / scale[col];
     }
 
     // fix the handness
 
-    vec3 x1 = {rot.data[0], rot.data[4], rot.data[8]};
-    vec3 y1 = {rot.data[1], rot.data[5], rot.data[9]};
-    vec3 z1 = {rot.data[2], rot.data[6], rot.data[10]};
+    vec3 x1 = {rot.data[0], rot.data[3], rot.data[6]};
+    vec3 y1 = {rot.data[1], rot.data[4], rot.data[7]};
+    vec3 z1 = {rot.data[2], rot.data[5], rot.data[8]};
     vec3 z2 = cross(x1, y1);
 
     if(dot(z2, z1) < 0)
     {
         rot.data[2] = z2.x;
-        rot.data[6] = z2.y;
-        rot.data[10] = z2.z;
+        rot.data[5] = z2.y;
+        rot.data[8] = z2.z;
         scale.z *= -1;
     }
 }
