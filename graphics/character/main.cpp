@@ -1800,15 +1800,10 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
     fps.model_tf = translate(fps.pos) * rotate_y4(fps.yaw) * translate(rotx_origin) * rotate_x4(-fps.pitch) * translate(-rotx_origin) * fps.adjust_tf;
     mat4 world_f_view = fps.model_tf * fps.cp_model_f_bone[locator_id];
     fps.eye_pos = vec3{world_f_view.data[3], world_f_view.data[7], world_f_view.data[11]};
-
-    // invert_coord_change doesn't work with nonorthogonal matrices (scale != 1) and inverse() for mat4 is not implemented
-    // todo:
-    {
-        vec3 pos, scale;
-        mat3 rot;
-        decompose(world_f_view, pos, rot, scale);
-        fps.view = invert_coord_change(translate(pos) * to_mat4(rot));
-    }
+    vec3 pos, scale;
+    mat3 rot;
+    decompose(world_f_view, pos, rot, scale);
+    fps.view = invert_coord_change(translate(pos) * to_mat4(rot));
     fps.proj = perspective(to_radians(80), fps.win_size.x / fps.win_size.y, 0.1, 1000);
     fps.forward_xz = rotate_y(fps.yaw) * vec3{0,0,1};
     fps.jump_action = false;
