@@ -108,18 +108,14 @@ void main()
     vec2 depth_uv = (pos_ndc.xy + 1) / 2;
     float dst_depth = texture(sampler0, depth_uv).r;
     float src_depth = (pos_ndc.z + 1) / 2;
-    vec4 factor = vec4(1);
 
-    if(src_depth - 0.0001 > dst_depth)
+    if(src_depth - 0.001 > dst_depth)
         discard;
 
     vec2 pos_win = vec2(1,-1) * win_size/2 * pos_ndc.xy + win_start + win_size/2;
     float d = length(pos_win - cursor_pos_win);
-
-    if(d <= radius)
-        out_color = vec4(1,0,0,1);
-    else
-        out_color = vec4(0);
+    float alpha = smoothstep(0, radius, radius - d);
+    out_color = vec4(1,0,0,alpha);
 }
 )";
 
@@ -377,10 +373,11 @@ struct Vertex
 
 struct Mesh
 {
+    Vertex* verts;
     mat4 model_tf;
     GLuint vbo;
     GLuint vao;
-    int vertex_count;
+    int vert_count;
 };
 
 enum ObjMode
@@ -400,7 +397,7 @@ Mesh load(const char* filename)
     std::vector<vec3> positions;
     std::vector<vec3> normals;
     std::vector<vec2> uvs;
-    std::vector<Vertex> vertices;
+    std::vector<Vertex> verts;
 
     for(;;)
     {
@@ -455,7 +452,7 @@ Mesh load(const char* filename)
                 vert.pos = positions[pos_id - 1];
                 vert.normal = normals[norm_id - 1];
                 vert.uv = uvs[uv_id - 1];
-                vertices.push_back(vert);
+                verts.push_back(vert);
             }
             break;
         }
@@ -465,12 +462,15 @@ Mesh load(const char* filename)
     }
     Mesh mesh;
     mesh.model_tf = identity4();
-    mesh.vertex_count = vertices.size();
+    mesh.vert_count = verts.size();
+    int buf_size = mesh.vert_count * sizeof(Vertex);
+    mesh.verts = (Vertex*)malloc(buf_size);
+    memcpy(mesh.verts, verts.data(), buf_size);
     glGenVertexArrays(1, &mesh.vao);
     glGenBuffers(1, &mesh.vbo);
     glBindVertexArray(mesh.vao);
     glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, buf_size, mesh.verts, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
     glEnableVertexAttribArray(2);
@@ -499,7 +499,68 @@ GLuint create_program(const char* src_vert, const char* src_frag)
     return program;
 }
 
-#define TEX_SIZE 1024
+struct MeshPaint
+{
+    GLuint vao;
+    GLuint vbo;
+};
+
+struct VertexPaint
+{
+    vec3 pos;
+    vec2 uv;
+};
+
+float signed_area(vec2 v1, vec2 v2)
+{
+    return {v1.x * v2.y - v1.y * v2.x};
+}
+
+#define TEX_SIZE 2048
+
+// this is to avoid ceretain seam artifacts
+
+MeshPaint gen_MeshPaint(Mesh src_mesh)
+{
+    std::vector<VertexPaint> verts;
+    verts.reserve(src_mesh.vert_count);
+
+    for(int base = 0; base < src_mesh.vert_count; base += 3)
+    {
+        Vertex* face = src_mesh.verts + base;
+        vec2 edge01 = face[1].uv - face[0].uv;
+        vec2 edge12 = face[2].uv - face[1].uv;
+        vec2 edge20 = face[0].uv - face[2].uv;
+        float area = signed_area(edge01, -edge20);
+
+        for(int i = 0; i < 3; ++i)
+        {
+            vec2 uv0 = face[i].uv;
+            vec2 uv1 = face[(i+1)%3].uv;
+            vec2 uv2 = face[(i+2)%3].uv;
+            // todo: better algorithm for extrusion?
+            vec2 d1 = normalize(uv0 - uv1);
+            vec2 d2 = normalize(uv0 - uv2);
+            vec2 uv = uv0 + 2.0/TEX_SIZE * (d1 + d2);
+            float b0 = signed_area(edge12, uv - face[1].uv) / area;
+            float b1 = signed_area(edge20, uv - face[2].uv) / area;
+            float b2 = signed_area(edge01, uv - face[0].uv) / area;
+            vec3 pos = b0 * face[0].pos + b1 * face[1].pos + b2 * face[2].pos;
+            verts.push_back({pos, uv});
+        }
+    }
+    MeshPaint mesh;
+    glGenVertexArrays(1, &mesh.vao);
+    glGenBuffers(1, &mesh.vbo);
+    glBindVertexArray(mesh.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(VertexPaint), verts.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(2); // 2 to keep compatible with basic Mesh
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VertexPaint), nullptr);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(VertexPaint), (void*)offsetof(VertexPaint, uv));
+    return mesh;
+}
 
 int main()
 {
@@ -540,14 +601,23 @@ int main()
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TEX_SIZE, TEX_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
 
+    // this is to support transparency in painting (MeshPaint triangles are overlapping and a test is needed to not color the same pixel twice
+    GLuint tex_uv_depth;
+    glGenTextures(1, &tex_uv_depth);
+    glBindTexture(GL_TEXTURE_2D, tex_uv_depth);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, TEX_SIZE, TEX_SIZE, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, nullptr);
+
     GLuint fbo;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glBindTexture(GL_TEXTURE_2D, tex);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    glBindTexture(GL_TEXTURE_2D, tex_uv_depth);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex_uv_depth, 0);
     glClear(GL_COLOR_BUFFER_BIT);
 
     Mesh mesh = load("suzanne.obj");
+    MeshPaint mesh_paint = gen_MeshPaint(mesh);
     Nav nav;
     nav_init(nav, vec3{0,0,2}, width, height, to_radians(90), 0.1, 100);
     bool quit = false;
@@ -556,6 +626,8 @@ int main()
 
     while(!quit)
     {
+        bool cursor_moved = false;
+        vec2 cursor_pos_win;
         SDL_Event event;
 
         while(SDL_PollEvent(&event))
@@ -585,9 +657,16 @@ int main()
                 bool down = event.type == SDL_MOUSEBUTTONDOWN;
 
                 if(event.button.button == SDL_BUTTON_LEFT)
+                {
                     lmb_down = down;
+                    cursor_moved = true;
+                }
                 break;
             }
+            case SDL_MOUSEMOTION:
+                cursor_moved = true;
+                cursor_pos_win = vec2{(float)event.motion.x, (float)event.motion.y};
+                break;
             }
         }
 
@@ -607,12 +686,12 @@ int main()
         (void)dt;
         prev_counter = current_counter;
         glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
 
-        if(lmb_down)
+        if(lmb_down && cursor_moved)
         {
             // depth pass
 
-            glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo_depth);
             glViewport(0, 0, width, height);
@@ -622,15 +701,15 @@ int main()
             glUniformMatrix4fv(glGetUniformLocation(program_depth, "view"), 1, GL_TRUE, nav.view.data);
             glUniformMatrix4fv(glGetUniformLocation(program_depth, "model"), 1, GL_TRUE, mesh.model_tf.data);
             glBindVertexArray(mesh.vao);
-            glDrawArrays(GL_TRIANGLES, 0, mesh.vertex_count);
+            glDrawArrays(GL_TRIANGLES, 0, mesh.vert_count);
 
             // paint pass
 
-            glDisable(GL_DEPTH_TEST);
             glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glViewport(0, 0, TEX_SIZE, TEX_SIZE);
+            glClear(GL_DEPTH_BUFFER_BIT);
             glBindTexture(GL_TEXTURE_2D, tex_depth);
             glUseProgram(program_paint);
             glUniformMatrix4fv(glGetUniformLocation(program_paint, "proj"), 1, GL_TRUE, nav.proj.data);
@@ -640,13 +719,13 @@ int main()
             glUniform2f(glGetUniformLocation(program_paint, "win_size"), width, height);
             glUniform2fv(glGetUniformLocation(program_paint, "cursor_pos_win"), 1, &nav.cursor_win.x);
             glUniform1f(glGetUniformLocation(program_paint, "radius"), 20);
-            glBindVertexArray(mesh.vao);
-            glDrawArrays(GL_TRIANGLES, 0, mesh.vertex_count);
+            glBindVertexArray(mesh_paint.vao);
+            //glBindVertexArray(mesh.vao); // uncomment to see the seam artifacts
+            glDrawArrays(GL_TRIANGLES, 0, mesh.vert_count);
         }
 
         // display pass
 
-        glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, width, height);
@@ -660,7 +739,7 @@ int main()
         vec3 light_dir = normalize(nav.eye_pos - nav.center);
         glUniform3fv(glGetUniformLocation(program, "light_dir"), 1, &light_dir.x);
         glBindVertexArray(mesh.vao);
-        glDrawArrays(GL_TRIANGLES, 0, mesh.vertex_count);
+        glDrawArrays(GL_TRIANGLES, 0, mesh.vert_count);
 
         SDL_GL_SwapWindow(window);
     }
