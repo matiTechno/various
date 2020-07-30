@@ -1799,11 +1799,9 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
     vec3 rotx_origin = to_vec3(fps.adjust_tf * fps.cp_model_f_bone[locator_id] * vec4{0,0,0,1});
     fps.model_tf = translate(fps.pos) * rotate_y4(fps.yaw) * translate(rotx_origin) * rotate_x4(-fps.pitch) * translate(-rotx_origin) * fps.adjust_tf;
     mat4 world_f_view = fps.model_tf * fps.cp_model_f_bone[locator_id];
-    fps.eye_pos = vec3{world_f_view.data[3], world_f_view.data[7], world_f_view.data[11]};
-    vec3 pos, scale;
-    mat3 rot;
-    decompose(world_f_view, pos, rot, scale);
-    fps.view = invert_coord_change(translate(pos) * to_mat4(rot));
+    vec3 eye_dir = normalize(-world_f_view.col(2));
+    fps.eye_pos = world_f_view.col(3);
+    fps.view = lookat(fps.eye_pos, eye_dir);
     fps.proj = perspective(to_radians(80), fps.win_size.x / fps.win_size.y, 0.1, 1000);
     fps.forward_xz = rotate_y(fps.yaw) * vec3{0,0,1};
     fps.jump_action = false;
@@ -1825,7 +1823,7 @@ void fps_resolve_events(FpsCtrl& fps, float dt, Mesh& level, bool& hit, vec3& hi
     {
         Ray ray;
         ray.pos = fps.eye_pos;
-        ray.dir = normalize(-1 * vec3{world_f_view.data[2], world_f_view.data[6], world_f_view.data[10]});
+        ray.dir = eye_dir;
         float t = intersect_level(ray, level);
 
         if(t >= 0)

@@ -137,11 +137,43 @@ vec4 operator*(float scalar, vec4 rhs)
 struct mat3
 {
     float data[9];
+
+    vec3 row(int idx)
+    {
+        vec3 v;
+        for(int i = 0; i < 3; ++i)
+            v[i] = data[idx*3 + i];
+        return v;
+    }
+
+    vec3 col(int idx)
+    {
+        vec3 v;
+        for(int i = 0; i < 3; ++i)
+            v[i] = data[i*3 + idx];
+        return v;
+    }
 };
 
 struct mat4
 {
     float data[16];
+
+    vec3 row(int idx)
+    {
+        vec3 v;
+        for(int i = 0; i < 3; ++i)
+            v[i] = data[idx*4 + i];
+        return v;
+    }
+
+    vec3 col(int idx)
+    {
+        vec3 v;
+        for(int i = 0; i < 3; ++i)
+            v[i] = data[i*4 + idx];
+        return v;
+    }
 };
 
 inline
