@@ -85,9 +85,13 @@ uniform mat4 proj;
 uniform mat4 view;
 uniform mat4 model;
 out vec4 frag_pos_clip;
+out vec4 clip2;
 void main()
 {
+    mat4 tr = mat4(1);
+    tr[3][2] = -0.01;
     frag_pos_clip = proj * view * model * vec4(pos,1);
+    clip2 = proj * tr * view * model * vec4(pos, 1);
     gl_Position = vec4(2*uv - 1, 0, 1);
 }
 )";
@@ -100,6 +104,7 @@ uniform vec2 cursor_pos_win;
 uniform float radius;
 uniform sampler2D sampler0;
 in vec4 frag_pos_clip;
+in vec4 clip2;
 out vec4 out_color;
 
 void main()
@@ -108,8 +113,10 @@ void main()
     vec2 depth_uv = (pos_ndc.xy + 1) / 2;
     float dst_depth = texture(sampler0, depth_uv).r;
     float src_depth = (pos_ndc.z + 1) / 2;
+    float depth2 = (clip2.z / clip2.w + 1) / 2;
+    float bias = depth2 - src_depth;
 
-    if(src_depth - 0.001 > dst_depth)
+    if(src_depth - bias > dst_depth)
         discard;
 
     vec2 pos_win = vec2(1,-1) * win_size/2 * pos_ndc.xy + win_start + win_size/2;
@@ -614,7 +621,9 @@ int main()
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     glBindTexture(GL_TEXTURE_2D, tex_uv_depth);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex_uv_depth, 0);
+    glClearColor(0.01,0.01,0.01,0);
     glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0,0,0,0);
 
     Mesh mesh = load("suzanne.obj");
     MeshPaint mesh_paint = gen_MeshPaint(mesh);
@@ -685,13 +694,13 @@ int main()
         float dt = (current_counter - prev_counter) / (double)SDL_GetPerformanceFrequency();
         (void)dt;
         prev_counter = current_counter;
-        glEnable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
 
         if(lmb_down && cursor_moved)
         {
             // depth pass
 
+            glEnable(GL_CULL_FACE);
             glDisable(GL_BLEND);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo_depth);
             glViewport(0, 0, width, height);
@@ -705,6 +714,7 @@ int main()
 
             // paint pass
 
+            glDisable(GL_CULL_FACE);
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -726,6 +736,7 @@ int main()
 
         // display pass
 
+        glEnable(GL_CULL_FACE);
         glDisable(GL_BLEND);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, width, height);
