@@ -599,7 +599,6 @@ int main()
     GLuint fbo_depth;
     glGenFramebuffers(1, &fbo_depth);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_depth);
-    glBindTexture(GL_TEXTURE_2D, tex_depth);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex_depth, 0);
 
     GLuint tex;
@@ -617,9 +616,7 @@ int main()
     GLuint fbo;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glBindTexture(GL_TEXTURE_2D, tex);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-    glBindTexture(GL_TEXTURE_2D, tex_uv_depth);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex_uv_depth, 0);
     glClearColor(0.01,0.01,0.01,0);
     glClear(GL_COLOR_BUFFER_BIT);
