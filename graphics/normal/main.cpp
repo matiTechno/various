@@ -527,7 +527,9 @@ Mesh load(const char* filename)
     {
         vec3 T = tangents[i];
         vec3 N = verts[i].normal;
-        T = normalize(T - dot(N, T) * N);
+        // use this when performing lighting in a tangent space, tangent basis must be orthonormal if inverse is obtained with transpose()
+        //T = normalize(T - dot(N, T) * N);
+        T = normalize(T);
         float handedness = dot(cross(N, T), bitangents[i]) > 0 ? 1 : -1;
         verts[i].tangent = vec4{T.x, T.y, T.z, handedness};
     }
