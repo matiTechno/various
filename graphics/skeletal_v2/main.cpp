@@ -47,12 +47,12 @@ static const char* src_frag = R"(
 #version 330
 
 uniform vec3 light_intensity = vec3(1,1,1);
-uniform vec3 light_dir = vec3(0,1,0.5);
 uniform float ambient_intensity = 0.1;
 uniform vec3 diffuse_color = vec3(0.5,0.5,0.5);
 uniform vec3 specular_color = vec3(1,0.5,0);
 uniform float specular_exp = 20;
 uniform vec3 eye_pos;
+uniform vec3 light_dir;
 
 in vec3 frag_pos;
 in vec3 frag_normal;
@@ -756,6 +756,8 @@ int main()
         assert(obj.mesh->bone_count <= MAX_BONES);
         glUniformMatrix4fv(glGetUniformLocation(program, "skinning_matrices"), obj.mesh->bone_count, GL_TRUE, obj.skinning_matrices[0].data);
         glUniform3fv(glGetUniformLocation(program, "eye_pos"), 1, &eye_pos.x);
+        vec3 light_dir = normalize(nav.eye_pos - nav.center);
+        glUniform3fv(glGetUniformLocation(program, "light_dir"), 1, &light_dir.x);
         glBindVertexArray(obj.mesh->vao);
         glDrawElements(GL_TRIANGLES, obj.mesh->index_count, GL_UNSIGNED_INT, (void*)(uint64_t)obj.mesh->ebo_offset); // suppress warning
 
