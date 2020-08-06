@@ -7,7 +7,6 @@
 # matrices in blender api are stored row-wise and vectors are column vectors
 # bone.matrix_local: bp_mesh_from_bone
 # pose.bone.matrix_basis: bone_cp_from_bp (bone space, this is not a change of basis matrix)
-# todo: only default smooth normals are exported, see calc_normals_split()
 
 import math
 import bpy
