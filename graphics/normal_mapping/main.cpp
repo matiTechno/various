@@ -320,6 +320,60 @@ void main()
 }
 )";
 
+const char* _src_frag_bump = R"(
+#version 330
+uniform vec3 light_intensity = vec3(1,1,1);
+uniform float ambient_intensity = 0.01;
+uniform float specular_exp = 20;
+uniform vec3 specular_color = vec3(0.2);
+uniform vec3 eye_pos;
+uniform vec3 light_dir;
+uniform sampler2D sampler0;
+uniform sampler2D sampler1;
+uniform float bump_strength;
+uniform int use_normal_map;
+
+in vec3 frag_pos;
+in vec2 frag_uv;
+in mat3 frag_TBN;
+
+out vec3 out_color;
+
+void main()
+{
+    vec2 texel_uv_size = vec2(1) / vec2(textureSize(sampler1, 0));
+    vec2 uv_dx = vec2(texel_uv_size.x, 0);
+    vec2 uv_dy = vec2(0, texel_uv_size.y);
+
+    float s0 = 2 * texture(sampler1, frag_uv + uv_dx).r - 1;
+    float s1 = 2 * texture(sampler1, frag_uv - uv_dx).r - 1;
+    float s2 = 2 * texture(sampler1, frag_uv + uv_dy).r - 1;
+    float s3 = 2 * texture(sampler1, frag_uv - uv_dy).r - 1;
+
+    float bump_dx = (s0 - s1) * bump_strength;
+    float bump_dy = (s2 - s3) * bump_strength;
+    vec3 S = vec3(1, 0, bump_dx);
+    vec3 T = vec3(0, 1, bump_dy);
+    vec3 N = normalize(frag_TBN * cross(S, T));
+
+    if(use_normal_map == 0)
+        N = normalize(frag_TBN[2]);
+
+    vec3 diffuse_color = texture(sampler0, frag_uv).rgb;
+
+    vec3 L = normalize(light_dir);
+    vec3 ambient_comp = diffuse_color * ambient_intensity;
+    vec3 diff_comp = diffuse_color * light_intensity * max(dot(N, L), 0);
+
+    vec3 V = normalize(eye_pos - frag_pos);
+    vec3 H = normalize(V + L);
+    vec3 spec_comp = specular_color * light_intensity * pow( max(dot(N, H), 0), specular_exp) * float(dot(N, L) > 0);
+
+    out_color = ambient_comp + diff_comp + spec_comp;
+    out_color = pow(out_color, vec3(1/2.2));
+}
+)";
+
 struct Vertex
 {
     vec3 pos;
@@ -611,18 +665,26 @@ int main()
         assert(false);
 
     GLuint program = create_program(_src_vert, _src_frag);
+    GLuint program_bump = create_program(_src_vert, _src_frag_bump);
+
     Mesh mesh = load("res/model.obj");
     GLuint tex_diff = load_texture("res/diffuse.jpg", LOAD_SRGB);
     GLuint tex_spec = load_texture("res/specular.jpg", LOAD_SRGB);
     GLuint tex_norm = load_texture("res/normal.jpg", LOAD_RGB);
+
+    Mesh mesh_bump = load("res_bump/model.obj");
+    GLuint tex_diff_bump = load_texture("res_bump/diffuse.jpg", LOAD_SRGB);
+    GLuint tex_bump = load_texture("res_bump/bump.png", LOAD_SRGB);
+
     bool quit = false;
     bool rotate = false;
     int use_normal_map = 1;
+    bool use_bump_model = false;
     mat4 model_tf = identity4();
     int width, height;
     SDL_GetWindowSize(window, &width, &height);
     Nav nav;
-    nav_init(nav, vec3{0,0,2.2}, width, height, to_radians(90), 0.1, 1000);
+    nav_init(nav, vec3{0,0,2.2}, width, height, to_radians(90), 0.01, 1000);
     Uint64 prev_counter = SDL_GetPerformanceCounter();
 
     while(!quit)
@@ -637,6 +699,8 @@ int main()
                 rotate = !rotate;
             else if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_n)
                 use_normal_map = !use_normal_map;
+            else if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_1)
+                use_bump_model = !use_bump_model;
 
             nav_process_event(nav, event);
         }
@@ -649,31 +713,56 @@ int main()
         if(rotate)
             model_tf = rotate_y4(dt * 2*pi/10) * model_tf;
 
+        vec3 light_dir = normalize(nav.eye_pos - nav.center);
+
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glActiveTexture(GL_TEXTURE0 + 0);
-        glBindTexture(GL_TEXTURE_2D, tex_diff);
-        glActiveTexture(GL_TEXTURE0 + 1);
-        glBindTexture(GL_TEXTURE_2D, tex_spec);
-        glActiveTexture(GL_TEXTURE0 + 2);
-        glBindTexture(GL_TEXTURE_2D, tex_norm);
+        if(!use_bump_model)
+        {
+            glActiveTexture(GL_TEXTURE0 + 0);
+            glBindTexture(GL_TEXTURE_2D, tex_diff);
+            glActiveTexture(GL_TEXTURE0 + 1);
+            glBindTexture(GL_TEXTURE_2D, tex_spec);
+            glActiveTexture(GL_TEXTURE0 + 2);
+            glBindTexture(GL_TEXTURE_2D, tex_norm);
 
-        vec3 light_dir = normalize(nav.eye_pos - nav.center);
-        glUseProgram(program);
-        glUniformMatrix4fv(glGetUniformLocation(program, "proj"), 1, GL_TRUE, nav.proj.data);
-        glUniformMatrix4fv(glGetUniformLocation(program, "view"), 1, GL_TRUE, nav.view.data);
-        glUniformMatrix4fv(glGetUniformLocation(program, "model"), 1, GL_TRUE, model_tf.data);
-        glUniform3fv(glGetUniformLocation(program, "eye_pos"), 1, &nav.eye_pos.x);
-        glUniform3fv(glGetUniformLocation(program, "light_dir"), 1, &light_dir.x);
-        glUniform1i(glGetUniformLocation(program, "sampler0"), 0);
-        glUniform1i(glGetUniformLocation(program, "sampler1"), 1);
-        glUniform1i(glGetUniformLocation(program, "sampler2"), 2);
-        glUniform1i(glGetUniformLocation(program, "use_normal_map"), use_normal_map);
+            glUseProgram(program);
+            glUniformMatrix4fv(glGetUniformLocation(program, "proj"), 1, GL_TRUE, nav.proj.data);
+            glUniformMatrix4fv(glGetUniformLocation(program, "view"), 1, GL_TRUE, nav.view.data);
+            glUniformMatrix4fv(glGetUniformLocation(program, "model"), 1, GL_TRUE, model_tf.data);
+            glUniform3fv(glGetUniformLocation(program, "eye_pos"), 1, &nav.eye_pos.x);
+            glUniform3fv(glGetUniformLocation(program, "light_dir"), 1, &light_dir.x);
+            glUniform1i(glGetUniformLocation(program, "sampler0"), 0);
+            glUniform1i(glGetUniformLocation(program, "sampler1"), 1);
+            glUniform1i(glGetUniformLocation(program, "sampler2"), 2);
+            glUniform1i(glGetUniformLocation(program, "use_normal_map"), use_normal_map);
 
-        glBindVertexArray(mesh.vao);
-        glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, (const void*)(uint64_t)mesh.ebo_offset);
+            glBindVertexArray(mesh.vao);
+            glDrawElements(GL_TRIANGLES, mesh.index_count, GL_UNSIGNED_INT, (const void*)(uint64_t)mesh.ebo_offset);
+        }
+        else
+        {
+            glActiveTexture(GL_TEXTURE0 + 0);
+            glBindTexture(GL_TEXTURE_2D, tex_diff_bump);
+            glActiveTexture(GL_TEXTURE0 + 1);
+            glBindTexture(GL_TEXTURE_2D, tex_bump);
+
+            glUseProgram(program_bump);
+            glUniformMatrix4fv(glGetUniformLocation(program_bump, "proj"), 1, GL_TRUE, nav.proj.data);
+            glUniformMatrix4fv(glGetUniformLocation(program_bump, "view"), 1, GL_TRUE, nav.view.data);
+            glUniformMatrix4fv(glGetUniformLocation(program_bump, "model"), 1, GL_TRUE, model_tf.data);
+            glUniform3fv(glGetUniformLocation(program_bump, "eye_pos"), 1, &nav.eye_pos.x);
+            glUniform3fv(glGetUniformLocation(program_bump, "light_dir"), 1, &light_dir.x);
+            glUniform1i(glGetUniformLocation(program_bump, "sampler0"), 0);
+            glUniform1i(glGetUniformLocation(program_bump, "sampler1"), 1);
+            glUniform1i(glGetUniformLocation(program_bump, "use_normal_map"), use_normal_map);
+            glUniform1f(glGetUniformLocation(program_bump, "bump_strength"), 5);
+
+            glBindVertexArray(mesh_bump.vao);
+            glDrawElements(GL_TRIANGLES, mesh_bump.index_count, GL_UNSIGNED_INT, (const void*)(uint64_t)mesh_bump.ebo_offset);
+        }
 
         SDL_GL_SwapWindow(window);
     }
