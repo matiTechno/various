@@ -345,10 +345,10 @@ void main()
     vec2 uv_dx = vec2(texel_uv_size.x, 0);
     vec2 uv_dy = vec2(0, texel_uv_size.y);
 
-    float s0 = 2 * texture(sampler1, frag_uv + uv_dx).r - 1;
-    float s1 = 2 * texture(sampler1, frag_uv - uv_dx).r - 1;
-    float s2 = 2 * texture(sampler1, frag_uv + uv_dy).r - 1;
-    float s3 = 2 * texture(sampler1, frag_uv - uv_dy).r - 1;
+    float s0 = texture(sampler1, frag_uv + uv_dx).r;
+    float s1 = texture(sampler1, frag_uv - uv_dx).r;
+    float s2 = texture(sampler1, frag_uv + uv_dy).r;
+    float s3 = texture(sampler1, frag_uv - uv_dy).r;
 
     float bump_dx = (s0 - s1) * bump_strength;
     float bump_dy = (s2 - s3) * bump_strength;
@@ -758,7 +758,7 @@ int main()
             glUniform1i(glGetUniformLocation(program_bump, "sampler0"), 0);
             glUniform1i(glGetUniformLocation(program_bump, "sampler1"), 1);
             glUniform1i(glGetUniformLocation(program_bump, "use_normal_map"), use_normal_map);
-            glUniform1f(glGetUniformLocation(program_bump, "bump_strength"), 5);
+            glUniform1f(glGetUniformLocation(program_bump, "bump_strength"), 10);
 
             glBindVertexArray(mesh_bump.vao);
             glDrawElements(GL_TRIANGLES, mesh_bump.index_count, GL_UNSIGNED_INT, (const void*)(uint64_t)mesh_bump.ebo_offset);
