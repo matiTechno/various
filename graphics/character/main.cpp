@@ -1884,7 +1884,7 @@ int main()
     }
     Mesh2 char_mesh;
     std::vector<Action> char_actions;
-    load2("/home/mat/Downloads/blender-2.83.0-linux64/anim_third", char_mesh, char_actions);
+    load2("anim_third", char_mesh, char_actions);
     assert(char_mesh.vertex_count);
     assert(char_actions.size());
     AnimCtrl actrl;
@@ -1925,7 +1925,7 @@ int main()
     fps.adjust_tf = actrl.adjust_tf;
     Mesh2 fps_mesh;
     std::vector<Action> fps_actions;
-    load2("/home/mat/Downloads/blender-2.83.0-linux64/anim_fps", fps_mesh, fps_actions);
+    load2("anim_fps", fps_mesh, fps_actions);
     assert(fps_mesh.vertex_count);
     assert(fps_actions.size());
     fps.mesh = &fps_mesh;
