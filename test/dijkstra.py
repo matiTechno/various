@@ -58,8 +58,10 @@ def find_path(map, pos_start, pos_end, star = False):
         active[pos_to_idx(pos_start)] = Vertex(None, 0, 0)
 
     while len(active):
-        # extract from 'priority queue'...
-        vid, vertex = sorted(active.items(), key = functools.cmp_to_key(vertex_cmp))[0]
+        # extract an element with the highest priority
+        # elements are not sorted by the priority because we access them more often by
+        # the id
+        vid, vertex = min(active.items(), key = functools.cmp_to_key(vertex_cmp))
         del active[vid]
         # place in the visited nodes
         assert not vid in traversed
