@@ -67,7 +67,10 @@ int main()
     int weights[SIZE] = {};
 
     for(char c : input_str)
+    {
+        assert(c >= 0);
         weights[(int)c] += 1;
+    }
 
     Queue queue(compare);
 
@@ -125,9 +128,13 @@ int main()
     // now we have a huffman tree in a 'canonical' form
     // time to do bit-packing
 
+    // layout:
+    // word1 = (a3, a2, a1, b2, b1, c4, ...), word2 = (e2, e1, f3, f2, f1, ...), ...
+    // a3 is the MSB of word1, e3 is the MSB of word2, ...
+
     std::vector<uint32_t> words;
     uint32_t word = 0;
-    int bits_covered = 0;
+    int word_bit_pos = 31;
 
     for(char c : input_str)
     {
@@ -141,27 +148,31 @@ int main()
             }
         }
         assert(code.symbol == c);
-        int next_bit = 0;
+        uint32_t value = code.value;
+        int length = code.length;
 
-        while(next_bit != code.length)
+        while(length > 0)
         {
-            uint32_t part = code.value >> next_bit;
-            part = part << bits_covered;
+            int num_bits = std::min(length, word_bit_pos + 1);
+            length -= num_bits;
+            uint32_t part = value >> length;
+            uint32_t mask = (1 << length) - 1;
+            value = value & mask;
+            word_bit_pos -= num_bits;
+            part = part << (word_bit_pos + 1);
             word = word | part;
-            int bits_added = std::min(code.length - next_bit, 32 - bits_covered);
-            next_bit += bits_added;
-            bits_covered += bits_added;
 
-            if(bits_covered == 32)
+            if(word_bit_pos < 0)
             {
+                assert(word_bit_pos == -1);
                 words.push_back(word);
-                bits_covered = 0;
+                word_bit_pos = 31;
                 word = 0;
             }
         }
     }
 
-    if(bits_covered)
+    if(word_bit_pos != 31)
         words.push_back(word);
 
     printf("input  bytes: %d\n", (int)(input_str.size()));
@@ -174,6 +185,7 @@ int main()
         // codes are already sorted by the numerical value, so no additional sorting is needed
         // one useful feature of canonical huffman code is that the codes have unique numerical values
         // (even if they differ in length)
+        // this is very inefficient approach but will suffice
         std::vector<uint32_t> code_values;
 
         for(CodeWord& cw : code_words)
@@ -182,15 +194,15 @@ int main()
         std::string decoded;
 
         int word_pos = 0;
-        int bits_covered = 0;
+        int word_bit_pos = 31;
         uint32_t value = 0;
         int value_bit_length = 0;
 
         while(decoded.size() != input_str.size())
         {
             assert(word_pos < (int)words.size());
-            uint32_t bit = (words[word_pos] >> bits_covered) & 1;
-            value = value | (bit << value_bit_length);
+            uint32_t bit = (words[word_pos] >> word_bit_pos) & 1;
+            value = (value << 1) | bit;
             value_bit_length += 1;
 
             auto it = std::lower_bound(code_values.begin(), code_values.end(), value);
@@ -206,15 +218,16 @@ int main()
                     decoded.push_back(cw.symbol);
                 }
             }
-            bits_covered += 1;
+            word_bit_pos -= 1;
 
-            if(bits_covered == 32)
+            if(word_bit_pos < 0)
             {
+                assert(word_bit_pos == -1);
                 word_pos += 1;
-                bits_covered = 0;
+                word_bit_pos = 31;
             }
         }
-        assert((word_pos == (int)words.size() && bits_covered == 0) || (word_pos == (int)words.size() - 1));
+        assert((word_pos == (int)words.size() && word_bit_pos == 31) || (word_pos == (int)words.size() - 1));
         printf("input   str: %s\n", input_str.c_str());
         printf("decoded str: %s\n", decoded.c_str());
     }
