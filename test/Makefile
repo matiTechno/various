@@ -1,2 +1,2 @@
 all:
-	g++ -Wall -Wextra main.cpp
+	g++ -Wall -Wextra -g huffman.cpp
