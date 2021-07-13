@@ -68,11 +68,11 @@ perf_samples.append(perf_samples[0])
 
 fig, ax = plt.subplots()
 ax.plot([p[0] for p in perf_samples], [p[1] for p in perf_samples], color='orange',
-        label='function')
+        label='image of a function f: R -> C')
 ax.plot([p.real for p in re_samples], [p.imag for p in re_samples], color='b',
         label='reconstruction based on samples')
 ax.scatter([p.real for p in samples], [p.imag for p in samples], color='r',
-        label='samples of the function')
+        label='samples of f')
 #ax.scatter([p[0] for p in control_points], [p[1] for p in control_points], color='g')
 ax.legend()
 plt.show()
